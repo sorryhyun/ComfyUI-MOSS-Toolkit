@@ -1,0 +1,19 @@
+[project]
+name = "comfyui-moss-i2i"
+description = "Image-to-image for MOSS-Image: a LoRA loader, a text encode that puts the page through Qwen3.5's vision tower, and a MODEL patch that feeds the page as a clean VAE reference latent on RoPE's reserved r axis. Works under KSampler and the MOSS Spectrum KSampler. Needs the moss-image node."
+version = "0.1.0"
+license = { file = "LICENSE" }
+# torch / numpy / pillow ship with any ComfyUI install; listed for a bare `pip install .`.
+dependencies = [
+    "torch",
+    "numpy",
+    "pillow",
+]
+
+[project.urls]
+Repository = "https://github.com/sorryhyun/ComfyUI-MOSS-i2i"
+
+[tool.comfy]
+PublisherId = "sorryhyun"
+DisplayName = "MOSS i2i"
+Icon = ""
