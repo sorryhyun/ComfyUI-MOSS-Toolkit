@@ -61,6 +61,8 @@ def _spans(y, span, main, ref):
 def ref_block(layer, x, rope, mod, ref_mod, span):
     """``moss-image``'s ``_Block.forward`` with the rows in ``span`` modulated by
     ``ref_mod``: op for op anima_lora's ``_Block`` with ``ref_span``."""
+    # A compiled block (Spectrum KSampler's compile) is an OptimizedModule wrapper.
+    layer = getattr(layer, "_orig_mod", layer)
     ops = sys.modules[type(layer).__module__]
     a = mod.unbind(1)
     r = ref_mod.unbind(1)
