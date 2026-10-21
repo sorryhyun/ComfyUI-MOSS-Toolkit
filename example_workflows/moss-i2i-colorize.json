@@ -6,14 +6,14 @@
   "nodes": [
     {
       "id": 1,
-      "type": "MOSSImageHFLoader",
+      "type": "MOSSImageLoader",
       "pos": [
         40,
         520
       ],
       "size": [
         420,
-        130
+        170
       ],
       "flags": {},
       "order": 0,
@@ -48,11 +48,13 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "MOSSImageHFLoader"
+        "Node name for S&R": "MOSSImageLoader"
       },
       "widgets_values": [
-        "/path/to/MOSS-Image-Base",
+        "MOSS-Image-Base",
         "default",
+        "fp8/qwen35_9b_fp8_e4m3fn.safetensors",
+        "MOSS-Image-Base",
         "default"
       ]
     },
@@ -97,15 +99,15 @@
       ]
     },
     {
-      "id": 3,
-      "type": "MOSSi2iLoraLoader",
+      "id": 4,
+      "type": "MOSSi2iReference",
       "pos": [
-        520,
-        620
+        620,
+        600
       ],
       "size": [
-        360,
-        90
+        340,
+        190
       ],
       "flags": {},
       "order": 2,
@@ -115,45 +117,6 @@
           "name": "model",
           "type": "MODEL",
           "link": 1
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            2
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "MOSSi2iLoraLoader"
-      },
-      "widgets_values": [
-        "moss_colorize_ref_v1.safetensors",
-        1.0
-      ]
-    },
-    {
-      "id": 4,
-      "type": "MOSSi2iReference",
-      "pos": [
-        940,
-        600
-      ],
-      "size": [
-        340,
-        140
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 2
         },
         {
           "name": "vae",
@@ -188,6 +151,8 @@
         "Node name for S&R": "MOSSi2iReference"
       },
       "widgets_values": [
+        "moss_colorize_ref_v1.safetensors",
+        1.0,
         1024,
         2
       ]
@@ -204,7 +169,7 @@
         60
       ],
       "flags": {},
-      "order": 4,
+      "order": 3,
       "mode": 0,
       "inputs": [
         {
@@ -242,7 +207,7 @@
         130
       ],
       "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
@@ -283,7 +248,7 @@
         220
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -327,7 +292,7 @@
         120
       ],
       "flags": {},
-      "order": 7,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -365,7 +330,7 @@
         470
       ],
       "flags": {},
-      "order": 8,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -424,7 +389,7 @@
         50
       ],
       "flags": {},
-      "order": 9,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -465,7 +430,7 @@
         600
       ],
       "flags": {},
-      "order": 10,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -487,14 +452,6 @@
     [
       1,
       1,
-      0,
-      3,
-      0,
-      "MODEL"
-    ],
-    [
-      2,
-      3,
       0,
       4,
       0,

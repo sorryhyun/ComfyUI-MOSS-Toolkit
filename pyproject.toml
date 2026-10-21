@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-moss-toolkit"
-description = "MOSS-Image toolkit: image-to-image (a LoRA loader, a text encode that puts the page through Qwen3.5's vision tower, and a MODEL patch that feeds the page as a clean VAE reference latent on RoPE's reserved r axis) and an Anima caption -> MOSS layout-JSON prompt node. Works under KSampler and the MOSS Spectrum KSampler. Needs the moss-image node."
-version = "0.2.0"
+description = "MOSS-Image toolkit: a one-node DiT + text encoder (bf16 or fp8) + VAE loader, image-to-image (a LoRA loader, a text encode that puts the page through Qwen3.5's vision tower, and a MODEL patch that feeds the page as a clean VAE reference latent on RoPE's reserved r axis) and an Anima caption -> MOSS layout-JSON prompt node. Works under KSampler and the MOSS Spectrum KSampler. Needs the moss-image node."
+version = "0.3.0"
 license = { file = "LICENSE" }
 # torch / numpy / pillow ship with any ComfyUI install; listed for a bare `pip install .`.
 dependencies = [

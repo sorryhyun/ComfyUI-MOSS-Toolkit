@@ -3,10 +3,35 @@
 Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on top of the
 `moss-image` node's MODEL / CLIP / VAE (formerly **MOSS i2i**, `comfyui-moss-i2i`):
 
+- **Loader** — DiT, Qwen3.5 text encoder and VAE in one node, each from its own
+  source; the TE can be the fp8 file.
 - **i2i** — image-to-image. First task: colorizing a B&W manga page with the colorize
   LoRA trained in anima_lora.
 - **Layout JSON** — an Anima-format caption as MOSS's layout-JSON prompt, for LoRAs
   trained on `caption_format=layout_json` captions.
+
+## Loader
+
+| Node | In → out | Notes |
+|---|---|---|
+| **MOSS-Image Loader (DiT + TE + VAE)** | → MODEL, CLIP, VAE | Picks each part on its own, so SFT's DiT pairs with Base's TE and VAE |
+
+The `moss_image` model folder is the one the `moss-image` node registers
+(`models/moss_image/`, or `moss_image:` in `extra_model_paths.yaml`).
+
+| Input | Options |
+|---|---|
+| `dit` | `moss_image/<name>/transformer/` dirs, then `diffusion_models` files |
+| `text_encoder` | `moss_image/<name>/text_encoder/` dirs (bf16), then `*.safetensors` beside a `config.json` in the other `moss_image/<name>/` dirs, then `text_encoders` files |
+| `vae` | `moss_image/<name>/vae/` dirs, then `vae` files |
+
+For the fp8 TE, download
+[`sorryhyun/MOSS-Image-Qwen3.5-9B-fp8`](https://huggingface.co/sorryhyun/MOSS-Image-Qwen3.5-9B-fp8)
+into `models/moss_image/fp8/` (it lists as `fp8/qwen35_9b_fp8_e4m3fn.safetensors`), or put
+the file in `models/text_encoders/`. It is 9.2 GB instead of the 16.8 GB bf16 shards. A
+single-file TE is tokenized with `moss_image/<name>/tokenizer/`: the DiT's own, else
+`MOSS-Image-Base`'s, else ComfyUI's bundled Qwen3.5 tokenizer. The vision tower is in the
+file, so the i2i text encode works with it. The loading is the `moss-image` node's.
 
 ## i2i
 
@@ -25,17 +50,16 @@ MOSS-Image has no image conditioning. This node adds two paths:
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS i2i LoRA Loader** | MODEL → MODEL | Plain `lora_unet_layers_*` LoRA. Reads `reference_latents` and `ref_timestep` from the metadata for the Reference node |
 | **MOSS i2i Text Encode (page + text)** | CLIP, IMAGE, text → CONDITIONING | `<|vision_start|>[page]<|vision_end|>{text}`. Empty text = page only. The page is fit to the target size and seen at that pixel count (~1000 tokens at 1 MP) |
-| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Ref at `1/ref_scale` per side (2 = 1/4 area). The ref goes into every forward and every CFG branch. Also outputs an empty latent at the target size |
+| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; plain `lora_unet_layers_*`) and reads `reference_latents`, `ref_scale` and `ref_timestep` from its metadata. Ref at `1/ref_scale` per side (2 = 1/4 area). The ref goes into every forward and every CFG branch. Also outputs an empty latent at the target size |
 
 ### Wiring
 
 ```
-MOSS-Image loaders ─ MODEL ─ MOSS i2i LoRA Loader ─ MOSS i2i Reference ─ MODEL ─┐
-                   ─ CLIP ─┬ MOSS i2i Text Encode (page, colour tags) ─ positive ─┤
-                           └ CLIP Text Encode ("") ─────────────────── negative ─┤ KSampler /
-                   ─ VAE ──── MOSS i2i Reference ───────────────────── LATENT ───┘ MOSS Spectrum KSampler
+MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA) ──────────────── MODEL ─┐
+                  ─ CLIP ─┬ MOSS i2i Text Encode (page, colour tags) ─ positive ─┤
+                          └ CLIP Text Encode ("") ─────────────────── negative ─┤ KSampler /
+                  ─ VAE ──── MOSS i2i Reference ───────────────────── LATENT ───┘ MOSS Spectrum KSampler
 Load Image (page) → Text Encode.image, Reference.image
 ```
 
