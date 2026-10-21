@@ -93,6 +93,10 @@ def page_at_target(image, resolution):
     return fit(page, *target_size(page.width, page.height, resolution))
 
 
+def _ref_timestep(value):
+    return None if value in (None, "") or float(value) < 0 else float(value)
+
+
 def _is_moss(model):
     dit = model.get_model_object("diffusion_model")
     return hasattr(dit, "video_head_modulation") and hasattr(dit, "final_norm_video")
@@ -156,6 +160,8 @@ class MOSSi2iLoraLoader:
             "lora": lora_name,
             "reference_latents": int(meta.get("reference_latents", 0) or 0),
             "ref_scale": meta.get("ref_scale"),
+            # Stamped by anima_lora since ref_timestep; negative or absent = shared.
+            "ref_timestep": _ref_timestep(meta.get("ref_timestep")),
         }
         out.model_options["transformer_options"] = options
         return (out,)
@@ -260,12 +266,13 @@ class MOSSi2iReference:
         rw = max(STRIDE, round(w / ref_scale / STRIDE) * STRIDE)
         rh = max(STRIDE, round(h / ref_scale / STRIDE) * STRIDE)
         ref = vae.encode(to_image(fit(page, rw, rh))).float().cpu()
+        ref_timestep = None if meta is None else meta.get("ref_timestep")
         out = model.clone()
         out.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.APPLY_MODEL, WRAPPER_KEY)
         out.add_wrapper_with_key(
             comfy.patcher_extension.WrappersMP.APPLY_MODEL,
             WRAPPER_KEY,
-            make_apply_model_wrapper(ref),
+            make_apply_model_wrapper(ref, ref_timestep),
         )
         latent = torch.zeros(1, ref.shape[1], h // STRIDE, w // STRIDE)
         return (out, {"samples": latent})

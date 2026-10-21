@@ -12,13 +12,14 @@ MOSS-Image has no image conditioning. This node adds two paths:
 - **VAE reference.** The page also goes in as a clean VAE latent: an extra token block
   `[image | ref | text]` on RoPE's reserved `r = 1` axis. Its `(h, w)` positions are
   stretched onto the target grid. A LoRA trained with these refs keeps the page's line
-  work.
+  work. A LoRA stamped with `ref_timestep` (colorize v2: 0) gets the ref rows
+  modulated at that timestep in every block; without it (v1) they share the step's.
 
 ## Nodes
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS i2i LoRA Loader** | MODEL → MODEL | Plain `lora_unet_layers_*` LoRA. Reads `reference_latents` from the metadata for the Reference node's check |
+| **MOSS i2i LoRA Loader** | MODEL → MODEL | Plain `lora_unet_layers_*` LoRA. Reads `reference_latents` and `ref_timestep` from the metadata for the Reference node |
 | **MOSS i2i Text Encode (page + text)** | CLIP, IMAGE, text → CONDITIONING | `<|vision_start|>[page]<|vision_end|>{text}`. Empty text = page only. The page is fit to the target size and seen at that pixel count (~1000 tokens at 1 MP) |
 | **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Ref at `1/ref_scale` per side (2 = 1/4 area). The ref goes into every forward and every CFG branch. Also outputs an empty latent at the target size |
 
