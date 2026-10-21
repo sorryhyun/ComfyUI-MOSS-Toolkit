@@ -58,12 +58,9 @@ def _spans(y, span, main, ref):
     return torch.cat((main(y[:, :s]), ref(y[:, s:e]), main(y[:, e:])), 1)
 
 
-def ref_block(layer, x, rope, mod, ref_mod, span):
+def _ref_block(layer, attention, situ, x, rope, mod, ref_mod, span):
     """``moss-image``'s ``_Block.forward`` with the rows in ``span`` modulated by
     ``ref_mod``: op for op anima_lora's ``_Block`` with ``ref_span``."""
-    # A compiled block (Spectrum KSampler's compile) is an OptimizedModule wrapper.
-    layer = getattr(layer, "_orig_mod", layer)
-    ops = sys.modules[type(layer).__module__]
     a = mod.unbind(1)
     r = ref_mod.unbind(1)
 
@@ -83,11 +80,29 @@ def ref_block(layer, x, rope, mod, ref_mod, span):
     y = y.to(dtype)
     q = layer.q_norm(layer.proj["q"](y).unflatten(-1, (layer.heads, -1))).flatten(2)
     k = layer.k_norm(layer.proj["k"](y).unflatten(-1, (layer.heads, -1))).flatten(2)
-    attn = ops._attention(q, k, layer.proj["v"](y), rope, layer.heads)
+    attn = attention(q, k, layer.proj["v"](y), rope, layer.heads)
     x = x + gated(layer.proj["o"](attn), 2)
     y = affine(layer.norm2(x), 3)
     hidden, gate = layer.proj["ffn_up_gate"](y.to(dtype)).chunk(2, -1)
-    return x + gated(layer.proj["ffn_down"](ops._situ(hidden, gate)), 5)
+    return x + gated(layer.proj["ffn_down"](situ(hidden, gate)), 5)
+
+
+_compiled = []
+
+
+def ref_block(layer, x, rope, mod, ref_mod, span):
+    """``_ref_block`` on ``layer``. A compiled block (an ``OptimizedModule``, e.g.
+    the Spectrum KSampler's compile) runs it compiled too: one inductor graph with
+    dynamic shapes, shared by all 42 blocks, since their parameters are graph
+    inputs rather than guards."""
+    base = getattr(layer, "_orig_mod", layer)
+    ops = sys.modules[type(base).__module__]
+    fn = _ref_block
+    if base is not layer:
+        if not _compiled:
+            _compiled.append(torch.compile(_ref_block, backend="inductor", dynamic=True))
+        fn = _compiled[0]
+    return fn(base, ops._attention, ops._situ, x, rope, mod, ref_mod, span)
 
 
 def _embed_latent(dit, latent):
