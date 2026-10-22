@@ -4,7 +4,7 @@ Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on top of the
 `moss-image` node's MODEL / CLIP / VAE (formerly **MOSS i2i**, `comfyui-moss-i2i`):
 
 - **Loader** — DiT, Qwen3.5 text encoder and VAE in one node, each from its own
-  source; the TE can be the fp8 file.
+  source; the TE can be the INT8 or fp8 file.
 - **i2i** — image-to-image. First task: colorizing a B&W manga page with the colorize
   LoRA trained in anima_lora.
 - **Layout JSON** — an Anima-format caption as MOSS's layout-JSON prompt, for LoRAs
@@ -25,10 +25,24 @@ The `moss_image` model folder is the one the `moss-image` node registers
 | `text_encoder` | `moss_image/<name>/text_encoder/` dirs (bf16), then `*.safetensors` beside a `config.json` in the other `moss_image/<name>/` dirs, then `text_encoders` files |
 | `vae` | `moss_image/<name>/vae/` dirs, then `vae` files |
 
-For the fp8 TE, download
+A quantized TE is one 9.2 GB file instead of the 16.8 GB bf16 shards. Download
+[`sorryhyun/MOSS-Image-Qwen3.5-9B-int8`](https://huggingface.co/sorryhyun/MOSS-Image-Qwen3.5-9B-int8)
+into `models/moss_image/int8/` (it lists as `int8/qwen35_9b_int8_convrot.safetensors`, the
+default when present) or
 [`sorryhyun/MOSS-Image-Qwen3.5-9B-fp8`](https://huggingface.co/sorryhyun/MOSS-Image-Qwen3.5-9B-fp8)
-into `models/moss_image/fp8/` (it lists as `fp8/qwen35_9b_fp8_e4m3fn.safetensors`), or put
-the file in `models/text_encoders/`. It is 9.2 GB instead of the 16.8 GB bf16 shards. A
+into `models/moss_image/fp8/` (`fp8/qwen35_9b_fp8_e4m3fn.safetensors`), or put the file in
+`models/text_encoders/`.
+
+INT8 runs W8A8 by default (`int8_matmul`, advanced): ComfyUI otherwise dequantizes a text
+encoder's weights for a bf16 matmul. RTX 5070 Ti, 20 prompts, embedding error vs the bf16 TE:
+
+| TE | Encode, tokens/s | Rel. L2 vs bf16 |
+|---|---|---|
+| INT8, `int8_matmul` on (W8A8) | 1321 | 0.047 |
+| INT8, `int8_matmul` off | 873 | 0.036 |
+| fp8 | 883 | 0.045 |
+
+W8A8 is what anima_lora encodes MOSS captions with by default. A
 single-file TE is tokenized with `moss_image/<name>/tokenizer/`: the DiT's own, else
 `MOSS-Image-Base`'s, else ComfyUI's bundled Qwen3.5 tokenizer. The vision tower is in the
 file, so the i2i text encode works with it. The loading is the `moss-image` node's.

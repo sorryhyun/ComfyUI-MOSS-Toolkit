@@ -2,7 +2,7 @@
 
 Loader (:mod:`.loader`, the ``moss-image`` node's loading code):
 
-* ``MOSSImageLoader`` — DiT + Qwen3.5 TE (bf16 dir or fp8 file) + VAE, each from its
+* ``MOSSImageLoader`` — DiT + Qwen3.5 TE (bf16 dir, INT8 or fp8 file) + VAE, each from its
   own source -> MODEL, CLIP, VAE.
 
 i2i (:mod:`.nodes`, self-contained, pulls no anima_lora code):
