@@ -112,6 +112,11 @@ MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA) ───────�
 Load Image (page) → Text Encode.image, Reference.image
 ```
 
+Sanitize (text / bubble removal, `example_workflows/moss-i2i-sanitize.json`): the
+colorize v3 wiring with Reference `task custom`, `ref_scale 1` (the LoRA's
+`ref_isolate` comes from its metadata), and the positive from Caption Helper
+`task sanitize`, the LoRA's fixed caption (the helper needs no image).
+
 Use the same `resolution` on Text Encode, Caption Helper and Reference. The negative is a plain text
 encode of `""`, which is what the LoRA was evaluated with. For CFG 3 with the uncond
 block-22 skip, use the MOSS Spectrum KSampler. anima_lora's colorize eval ran 30 steps,
@@ -139,11 +144,12 @@ live `diffusion_model` runs a ref-aware copy of the `moss-image` forward.
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: the node below. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution` |
+| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: the node below. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on; the caption input is ignored |
 | **Anima Caption → MOSS Layout JSON** | STRING → STRING | `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item |
 
 Feed the layout output into `CLIP Text Encode` with MOSS-Image's text encoder, the
-colorize output into **MOSS i2i Text Encode** as its `text`. For colorize, type the
+colorize output into **MOSS i2i Text Encode** as its `text` (v2) or a plain `CLIP Text
+Encode` (v3), the sanitize output into a plain `CLIP Text Encode`. For colorize, type the
 colour tags the LoRA trained on (copyright, `comic` for a manga page, hair / eye /
 clothing colours). The OCR is anime-tools' AnimeText detector with the manga VL
 reader on every box; both load for the read (~6 GB VRAM freed first) and unload

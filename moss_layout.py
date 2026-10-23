@@ -11,7 +11,8 @@ text encoder as the identical string. The output goes into any STRING input
 ``caption_to_layout``, then one text item per line the OCR reads off the B&W page
 (anima_lora ``project/moss_lora/src/colorize_cache.py``; ``readable`` / ``dedupe``
 / ``_colorize_layout`` mirror it). The OCR models load for the read and are freed
-after it.
+after it. ``sanitize`` is the sanitize LoRA's one fixed caption, plain text; the
+caption input is ignored.
 
 Torch-free but for the colorize OCR. Needs ``anime-tools``; ``__init__`` skips this node when it is not
 installed. The danbooru tag KB (``danbooru_tags_classified.csv``) decides which
@@ -122,6 +123,9 @@ class AnimaCaptionToMossLayout:
 # scores LOW_DET_SCORE (the detector scores horizontal English balloons 0.3-0.55),
 # and an all-ASCII line's glyph floor is LATIN_MIN_GLYPH.
 LOW_DET_SCORE = 0.9
+# anima_lora configs/moss/i2i/sanitize/cache.toml ``fixed_caption`` (caption_format
+# fixed: every pair encoded this string verbatim) — change both together.
+SANITIZE_CAPTION = "no sfx, no dialogue, no watermark"
 LATIN_MIN_GLYPH = 12.0
 OCR_VRAM_GB = 6
 
@@ -194,7 +198,7 @@ def _colorize_layout(caption, lines, size) -> str:
 class MOSSCaptionHelper:
     """An Anima caption as the prompt a MOSS LoRA trained on, per task."""
 
-    TASKS = ("layout", "colorize")
+    TASKS = ("layout", "colorize", "sanitize")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -219,7 +223,9 @@ class MOSSCaptionHelper:
                         "tooltip": (
                             "layout: the caption as layout JSON. colorize: the "
                             "same, plus a text item per line the OCR reads off "
-                            "the page, boxed on the target canvas."
+                            "the page, boxed on the target canvas. sanitize: "
+                            "the sanitize LoRA's fixed caption, plain text; the "
+                            "caption is ignored."
                         ),
                     },
                 ),
@@ -242,13 +248,18 @@ class MOSSCaptionHelper:
         "JSON of 'Anima Caption → MOSS Layout JSON'. colorize: the colorize LoRA's "
         "caption — that layout plus one text item per OCR-read line of the page, "
         "boxed in abs_centralized yxyx on the canvas the i2i nodes generate at "
-        "(same resolution). Feed it to MOSS i2i Text Encode."
+        "(same resolution). Feed it to MOSS i2i Text Encode. sanitize: the "
+        "sanitize LoRA's fixed caption, verbatim, for a plain CLIP Text Encode."
     )
 
     def convert(self, caption, task, resolution, image=None):
         caption = caption.strip()
         if task == "layout":
             text = layout_json(caption, _kb())
+        elif task == "sanitize":
+            if caption and caption != SANITIZE_CAPTION:
+                logger.warning("MOSS Caption Helper: sanitize ignores the caption %r", caption)
+            text = SANITIZE_CAPTION
         else:
             if image is None:
                 raise ValueError("MOSS Caption Helper: colorize needs the page image")
