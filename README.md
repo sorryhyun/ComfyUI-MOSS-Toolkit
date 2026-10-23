@@ -144,12 +144,12 @@ live `diffusion_model` runs a ref-aware copy of the `moss-image` forward.
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: the node below. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on; the caption input is ignored |
+| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: the node below. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on. `task = decensor`: `no bar censor, no mosaic censor, uncensored`, likewise for the decensor LoRA. Both ignore the caption input |
 | **Anima Caption → MOSS Layout JSON** | STRING → STRING | `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item |
 
 Feed the layout output into `CLIP Text Encode` with MOSS-Image's text encoder, the
 colorize output into **MOSS i2i Text Encode** as its `text` (v2) or a plain `CLIP Text
-Encode` (v3), the sanitize output into a plain `CLIP Text Encode`. For colorize, type the
+Encode` (v3), the sanitize and decensor outputs into a plain `CLIP Text Encode`. For colorize, type the
 colour tags the LoRA trained on (copyright, `comic` for a manga page, hair / eye /
 clothing colours). The OCR is anime-tools' AnimeText detector with the manga VL
 reader on every box; both load for the read (~6 GB VRAM freed first) and unload

@@ -18,7 +18,7 @@ Text (:mod:`.moss_layout`, registered only when ``anime-tools`` is installed):
   layout-JSON prompt.
 * ``MOSSCaptionHelper`` — STRING (+ IMAGE) -> STRING, per task: ``layout`` as above,
   ``colorize`` that layout plus the page's OCR lines, the colorize LoRA's caption,
-  ``sanitize`` the sanitize LoRA's fixed caption.
+  ``sanitize`` / ``decensor`` that LoRA's fixed caption.
 """
 
 import logging
