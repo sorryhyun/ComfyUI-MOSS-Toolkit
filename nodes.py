@@ -1,6 +1,12 @@
 """MOSS i2i nodes: page-through-the-vision-tower text encode, and the VAE reference
 patch with its LoRA.
 
+``task = colorize`` on the Reference node runs the colorize recipe the LoRA was
+trained with (anima_lora ``project/moss_lora/plan.md``): v3 (``ref_isolate`` in the
+metadata) takes the page as a full-size isolated ref with a text-only prompt (plain
+CLIP Text Encode), v2 as a half-size joint ref with the page through the vision
+tower (MOSS i2i Text Encode).
+
 Preprocessing matches anima_lora's colorize cache (``project/moss_lora/src/
 colorize_cache.py`` on ``i2i_probe``): the page is fit (cover + centre crop,
 Lanczos) to the target size, which is ``library/moss/cache.py::target_size``; the
@@ -31,6 +37,8 @@ VISION_MIN_PIXELS = 65536  # the probe's Qwen2VLImageProcessor shortest_edge
 VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
 IMAGE_PAD = 248056
 WRAPPER_KEY = "moss_i2i_ref"
+TASKS = ("colorize", "custom")
+REF_CACHE = ("gpu", "cpu", "off")
 
 
 def target_size(width, height, resolution):
@@ -174,15 +182,30 @@ def load_lora(model, lora_name, strength):
         "ref_scale": meta.get("ref_scale"),
         # Stamped by anima_lora since ref_timestep; negative or absent = shared.
         "ref_timestep": _ref_timestep(meta.get("ref_timestep")),
+        # Stamped "1" by anima_lora when the ref queries saw only the ref keys.
+        "ref_isolate": meta.get("ref_isolate") in ("1", "True"),
     }
+
+
+def colorize_recipe(meta):
+    """``(ref_scale, label)`` of the colorize recipe ``meta`` trained with: v3
+    (``ref_isolate``) full size, v2 half size. A stamped ``ref_scale`` wins."""
+    v3 = meta is None or meta["ref_isolate"]
+    scale = 1 if v3 else 2
+    if meta is not None and meta["ref_scale"]:
+        scale = int(meta["ref_scale"])
+    if v3:
+        return scale, "v3: isolated ref, text-only prompt (CLIP Text Encode, no page)"
+    return scale, "v2: joint ref, page through the vision tower (MOSS i2i Text Encode)"
 
 
 class MOSSi2iReference:
     """A MOSS i2i LoRA (e.g. colorize) plus the page as a clean VAE latent on RoPE's
     ``r = 1`` axis, in every forward and every CFG branch. The LoRA's metadata sets
-    the ref rows' timestep and checks ``ref_scale``. Works under any sampler that
-    calls ``apply_model`` (KSampler, the MOSS Spectrum KSampler). Outputs an empty
-    latent at the target size."""
+    the ref rows' timestep and isolation and checks ``ref_scale``; ``task = colorize``
+    sets ``ref_scale`` from the recipe the LoRA trained with. Works under any sampler
+    that calls ``apply_model`` (KSampler, the MOSS Spectrum KSampler). Outputs an
+    empty latent at the target size."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -203,12 +226,37 @@ class MOSSi2iReference:
                 "ref_scale": (
                     "INT",
                     {
-                        "default": 2,
+                        "default": 1,
                         "min": 1,
                         "max": 8,
                         "tooltip": (
-                            "Ref side = target side / ref_scale. The colorize ref LoRA "
-                            "was trained at 2 (1/4 area)."
+                            "Ref side = target side / ref_scale (task = custom only). "
+                            "Colorize v3 trains at 1 (full size), v2 at 2 (1/4 area)."
+                        ),
+                    },
+                ),
+                "task": (
+                    list(TASKS),
+                    {
+                        "default": "colorize",
+                        "tooltip": (
+                            "colorize: the recipe the LoRA trained with. v3 (ref_isolate "
+                            "in its metadata): full-size isolated ref, prompt through a "
+                            "plain CLIP Text Encode. v2: half-size ref, prompt through "
+                            "MOSS i2i Text Encode. custom: ref_scale as set."
+                        ),
+                    },
+                ),
+                "ref_cache": (
+                    list(REF_CACHE),
+                    {
+                        "default": "gpu",
+                        "tooltip": (
+                            "An isolated ref (colorize v3) depends on the page alone: "
+                            "run it through the blocks once and keep its keys / values "
+                            "(~2.1 GB bf16 at 1 MP), so each forward runs the image and "
+                            "text rows only. cpu: kept in host memory, copied in per "
+                            "forward. off: the ref rows in every forward."
                         ),
                     },
                 ),
@@ -220,7 +268,7 @@ class MOSSi2iReference:
     CATEGORY = "MOSS-Image/i2i"
     DESCRIPTION = "Load a MOSS i2i LoRA and feed the page to MOSS-Image as a VAE reference latent (RoPE r = 1)."
 
-    def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale):
+    def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="colorize", ref_cache="gpu"):
         if not _is_moss(model):
             raise ValueError("MOSS i2i Reference needs a MOSS-Image MODEL (moss-image node).")
         meta = None
@@ -233,25 +281,29 @@ class MOSSi2iReference:
                     "MOSS i2i: %s was trained without references; the ref is off its distribution",
                     lora_name,
                 )
-            if meta["ref_scale"] and int(meta["ref_scale"]) != ref_scale:
-                logger.warning(
-                    "MOSS i2i: %s was trained at ref_scale %s, running %d",
-                    lora_name,
-                    meta["ref_scale"],
-                    ref_scale,
-                )
+        if task == "colorize":
+            ref_scale, recipe = colorize_recipe(meta)
+            logger.info("MOSS i2i: colorize %s, ref_scale %d", recipe, ref_scale)
+        elif meta is not None and meta["ref_scale"] and int(meta["ref_scale"]) != ref_scale:
+            logger.warning(
+                "MOSS i2i: %s was trained at ref_scale %s, running %d",
+                lora_name,
+                meta["ref_scale"],
+                ref_scale,
+            )
         page = page_at_target(image, resolution)
         w, h = page.size
         rw = max(STRIDE, round(w / ref_scale / STRIDE) * STRIDE)
         rh = max(STRIDE, round(h / ref_scale / STRIDE) * STRIDE)
         ref = vae.encode(to_image(fit(page, rw, rh))).float().cpu()
-        ref_timestep = None if meta is None else meta.get("ref_timestep")
+        ref_timestep = None if meta is None else meta["ref_timestep"]
+        ref_isolate = meta is not None and meta["ref_isolate"]
         out = model.clone()
         out.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.APPLY_MODEL, WRAPPER_KEY)
         out.add_wrapper_with_key(
             comfy.patcher_extension.WrappersMP.APPLY_MODEL,
             WRAPPER_KEY,
-            make_apply_model_wrapper(ref, ref_timestep),
+            make_apply_model_wrapper(ref, ref_timestep, ref_isolate, ref_cache),
         )
         latent = torch.zeros(1, ref.shape[1], h // STRIDE, w // STRIDE)
         return (out, {"samples": latent})

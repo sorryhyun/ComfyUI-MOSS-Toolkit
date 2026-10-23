@@ -58,17 +58,51 @@ MOSS-Image has no image conditioning. This node adds two paths:
 - **VAE reference.** The page also goes in as a clean VAE latent: an extra token block
   `[image | ref | text]` on RoPE's reserved `r = 1` axis. Its `(h, w)` positions are
   stretched onto the target grid. A LoRA trained with these refs keeps the page's line
-  work. A LoRA stamped with `ref_timestep` (colorize v2: 0) gets the ref rows
+  work. A LoRA stamped with `ref_timestep` (colorize v2 / v3: 0) gets the ref rows
   modulated at that timestep in every block; without it (v1) they share the step's.
+  A LoRA stamped with `ref_isolate` (colorize v3) has the ref queries attend only to
+  the ref keys; image and text still read the ref.
+
+Colorize v3 uses the VAE reference alone: the page at full size, isolated, and a
+text-only prompt (a plain CLIP Text Encode). v2 uses both paths, the ref at half size.
+
+| Colorize | Ref | Prompt encode |
+|---|---|---|
+| v3 (`ref_isolate` in the metadata) | full size, isolated | CLIP Text Encode, no page |
+| v2 | half size (`ref_scale 2`), joint | MOSS i2i Text Encode (page + text) |
 
 ### Nodes
 
 | Node | In → out | Notes |
 |---|---|---|
 | **MOSS i2i Text Encode (page + text)** | CLIP, IMAGE, text → CONDITIONING | `<|vision_start|>[page]<|vision_end|>{text}`. Empty text = page only. The page is fit to the target size and seen at that pixel count (~1000 tokens at 1 MP) |
-| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; plain `lora_unet_layers_*`) and reads `reference_latents`, `ref_scale` and `ref_timestep` from its metadata. Ref at `1/ref_scale` per side (2 = 1/4 area). The ref goes into every forward and every CFG branch. Also outputs an empty latent at the target size |
+| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; plain `lora_unet_layers_*`) and reads `reference_latents`, `ref_scale`, `ref_timestep` and `ref_isolate` from its metadata. `task = colorize` sets the ref size from the recipe the LoRA trained with (v3 full size, v2 half); `task = custom` uses `ref_scale` (ref at `1/ref_scale` per side, 2 = 1/4 area). The ref goes into every forward and every CFG branch. `ref_cache`: see below. Also outputs an empty latent at the target size |
+
+### Ref K/V cache
+
+An isolated ref with its own timestep (colorize v3) depends only on the page: not on
+the step, the prompt or the CFG branch. With `ref_cache = gpu` (default) the first
+forward runs it through the 42 blocks once and keeps each block's ref keys and
+values (~2.1 GB bf16 at 1 MP). After that, each forward runs only the image and text
+rows, so the full-size ref costs about as much as extra keys. The cache lasts until
+the model's weight patches or the target size change, so a reseed of the same page
+reuses it. `cpu` keeps it in pinned host memory and copies one block's K/V in at a
+time (for low VRAM); `off` runs the ref rows in every forward. v1 / v2 LoRAs
+(joint ref) always run the ref rows.
 
 ### Wiring
+
+Colorize v3 (`example_workflows/moss-i2i-colorize-v3.json`):
+
+```
+MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA, task colorize) ── MODEL ─┐
+                  ─ CLIP ─┬ CLIP Text Encode (Caption Helper's prompt) ─ positive ─┤
+                          └ CLIP Text Encode ("") ─────────────────── negative ─┤ KSampler /
+                  ─ VAE ──── MOSS i2i Reference ───────────────────── LATENT ───┘ MOSS Spectrum KSampler
+Load Image (page) → Reference.image, Caption Helper.image (task colorize, colour tags)
+```
+
+Colorize v2 (`example_workflows/moss-i2i-colorize.json`):
 
 ```
 MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA) ──────────────── MODEL ─┐
@@ -78,16 +112,25 @@ MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA) ───────�
 Load Image (page) → Text Encode.image, Reference.image
 ```
 
-Use the same `resolution` on Text Encode and Reference. The negative is a plain text
+Use the same `resolution` on Text Encode, Caption Helper and Reference. The negative is a plain text
 encode of `""`, which is what the LoRA was evaluated with. For CFG 3 with the uncond
-block-22 skip, use the MOSS Spectrum KSampler.
+block-22 skip, use the MOSS Spectrum KSampler. anima_lora's colorize eval ran 30 steps,
+CFG 3, ER-SDE, Spectrum at its defaults, with the fp8 TE. That is the v3 example
+workflow, except that ComfyUI's σ grid is not snapped to the training grid and its
+ER-SDE noise differs, so a seed does not reproduce the eval's image.
 
 ### Compatibility
 
 - **Spectrum (MOSS).** Cached steps never call the DiT, so they cost no ref rows. On
   full steps the capture hook sees the image rows only.
-- **DAVE.** Its hook reads the leading image rows. The ref rows come after them.
+- **DAVE.** Its hook reads the leading image rows. The ref rows come after them (or,
+  with the ref cache, are not in the block's rows at all). The block functions this
+  node runs in place of `layer(...)` call the block's forward hooks themselves.
 - **SLG / uncond skip.** The `patches_replace` dispatch is kept, so it still works.
+  With `ref_isolate`, a skipped block still runs the ref rows (they depend only on
+  themselves there), so the uncond branch reads the same ref as the cond, as in
+  training. With the ref cache this needs no extra work: the cache holds every
+  block's pass.
 
 The patch is an `APPLY_MODEL` wrapper. For the length of each `apply_model` call, the
 live `diffusion_model` runs a ref-aware copy of the `moss-image` forward.

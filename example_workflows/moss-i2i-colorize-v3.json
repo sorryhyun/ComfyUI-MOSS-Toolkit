@@ -1,0 +1,547 @@
+{
+  "id": "df90aa0c-4cc4-4c1b-9ffd-097414fd63cb",
+  "revision": 0,
+  "last_node_id": 12,
+  "last_link_id": 18,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MOSSImageLoader",
+      "pos": [
+        40,
+        520
+      ],
+      "size": [
+        420,
+        170
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            7,
+            9
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            3,
+            15
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MOSSImageLoader"
+      },
+      "widgets_values": [
+        "MOSS-Image-Base",
+        "default",
+        "fp8/qwen35_9b_fp8_e4m3fn.safetensors",
+        "MOSS-Image-Base",
+        "default"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        320,
+        380
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            4,
+            8
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "page.png",
+        "image"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "MOSSi2iReference",
+      "pos": [
+        620,
+        600
+      ],
+      "size": [
+        340,
+        190
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 3
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            18
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            13
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MOSSi2iReference"
+      },
+      "widgets_values": [
+        "moss_colorize_ref_v3.safetensors",
+        1.0,
+        1024,
+        1,
+        "colorize",
+        "gpu"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "CLIPTextEncode",
+      "pos": [
+        520,
+        60
+      ],
+      "size": [
+        420,
+        220
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 7
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": 17
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            11
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 8,
+      "type": "CLIPTextEncode",
+      "pos": [
+        520,
+        340
+      ],
+      "size": [
+        420,
+        120
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            12
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 9,
+      "type": "MossSpectrumKSampler",
+      "pos": [
+        1720,
+        200
+      ],
+      "size": [
+        300,
+        470
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 18
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 11
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 12
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            14
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MossSpectrumKSampler"
+      },
+      "widgets_values": [
+        1,
+        "fixed",
+        30,
+        3.0,
+        "er_sde",
+        "sgm_uniform",
+        1.0,
+        5.0,
+        "22",
+        true,
+        0.5,
+        true
+      ]
+    },
+    {
+      "id": 10,
+      "type": "VAEDecode",
+      "pos": [
+        2080,
+        200
+      ],
+      "size": [
+        220,
+        50
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 14
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            16
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 11,
+      "type": "SaveImage",
+      "pos": [
+        2340,
+        200
+      ],
+      "size": [
+        480,
+        600
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 16
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "moss-i2i-colorize"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "MOSSCaptionHelper",
+      "pos": [
+        520,
+        -240
+      ],
+      "size": [
+        420,
+        240
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": [
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MOSSCaptionHelper"
+      },
+      "widgets_values": [
+        "touhou, purple eyes, purple hair, black hairband, blue shirt",
+        "colorize",
+        1024
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "MODEL"
+    ],
+    [
+      3,
+      1,
+      2,
+      4,
+      1,
+      "VAE"
+    ],
+    [
+      4,
+      2,
+      0,
+      4,
+      2,
+      "IMAGE"
+    ],
+    [
+      7,
+      1,
+      1,
+      7,
+      0,
+      "CLIP"
+    ],
+    [
+      8,
+      2,
+      0,
+      12,
+      0,
+      "IMAGE"
+    ],
+    [
+      9,
+      1,
+      1,
+      8,
+      0,
+      "CLIP"
+    ],
+    [
+      11,
+      7,
+      0,
+      9,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      12,
+      8,
+      0,
+      9,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      13,
+      4,
+      1,
+      9,
+      3,
+      "LATENT"
+    ],
+    [
+      14,
+      9,
+      0,
+      10,
+      0,
+      "LATENT"
+    ],
+    [
+      15,
+      1,
+      2,
+      10,
+      1,
+      "VAE"
+    ],
+    [
+      16,
+      10,
+      0,
+      11,
+      0,
+      "IMAGE"
+    ],
+    [
+      17,
+      12,
+      0,
+      7,
+      1,
+      "STRING"
+    ],
+    [
+      18,
+      4,
+      0,
+      9,
+      0,
+      "MODEL"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [
+        0,
+        0
+      ]
+    }
+  },
+  "version": 0.4
+}
