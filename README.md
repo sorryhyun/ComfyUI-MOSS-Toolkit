@@ -76,7 +76,7 @@ text-only prompt (a plain CLIP Text Encode). v2 uses both paths, the ref at half
 | Node | In → out | Notes |
 |---|---|---|
 | **MOSS i2i Text Encode (page + text)** | CLIP, IMAGE, text → CONDITIONING | `<|vision_start|>[page]<|vision_end|>{text}`. Empty text = page only. The page is fit to the target size and seen at that pixel count (~1000 tokens at 1 MP) |
-| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; plain `lora_unet_layers_*`) and reads `reference_latents`, `ref_scale`, `ref_timestep` and `ref_isolate` from its metadata. `task = colorize` sets the ref size from the recipe the LoRA trained with (v3 full size, v2 half); `task = custom` uses `ref_scale` (ref at `1/ref_scale` per side, 2 = 1/4 area). The ref goes into every forward and every CFG branch. `ref_cache`: see below. Also outputs an empty latent at the target size |
+| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; plain `lora_unet_layers_*`) and reads `reference_latents`, `ref_scale`, `ref_timestep` and `ref_isolate` from its metadata. `task = auto` sets the ref size from the recipe the LoRA trained with: full size for an isolated ref (colorize v3, sanitize, swap_text), half for colorize v2. Workflows saved with `task = colorize` run as `auto`; ones saved with `task = custom` still load and use `ref_scale` (ref at `1/ref_scale` per side, 2 = 1/4 area). The ref goes into every forward and every CFG branch. `ref_cache`: see below. Also outputs an empty latent at the target size |
 
 ### Ref K/V cache
 
@@ -95,7 +95,7 @@ time (for low VRAM); `off` runs the ref rows in every forward. v1 / v2 LoRAs
 Colorize v3 (`example_workflows/moss-i2i-colorize-v3.json`):
 
 ```
-MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA, task colorize) ── MODEL ─┐
+MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA, task auto) ────── MODEL ─┐
                   ─ CLIP ─┬ CLIP Text Encode (Caption Helper's prompt) ─ positive ─┤
                           └ CLIP Text Encode ("") ─────────────────── negative ─┤ KSampler /
                   ─ VAE ──── MOSS i2i Reference ───────────────────── LATENT ───┘ MOSS Spectrum KSampler
@@ -113,9 +113,15 @@ Load Image (page) → Text Encode.image, Reference.image
 ```
 
 Sanitize (text / bubble removal, `example_workflows/moss-i2i-sanitize.json`): the
-colorize v3 wiring with Reference `task custom`, `ref_scale 1` (the LoRA's
-`ref_isolate` comes from its metadata), and the positive from Caption Helper
-`task sanitize`, the LoRA's fixed caption (the helper needs no image).
+colorize v3 wiring (the LoRA's `ref_isolate` comes from its metadata), with the
+positive from Caption Helper `task sanitize`, the LoRA's fixed caption (the helper
+needs no image).
+
+Swap text (JA lettering → translated): the same wiring, with the positive a layout-JSON
+prompt that lists one text item per line to letter, its `bbox` in `abs_centralized`
+`yxyx` pixels of the page at the Reference's `resolution` (a balloon left out stays
+Japanese). Caption Helper `task layout` passes a caption that already is layout JSON
+through unchanged, so the prompt can be typed there or straight into `CLIP Text Encode`.
 
 Use the same `resolution` on Text Encode, Caption Helper and Reference. The negative is a plain text
 encode of `""`, which is what the LoRA was evaluated with. For CFG 3 with the uncond
@@ -144,8 +150,8 @@ live `diffusion_model` runs a ref-aware copy of the `moss-image` forward.
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: the node below. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on. `task = decensor`: `no bar censor, no mosaic censor, uncensored`, likewise for the decensor LoRA. Both ignore the caption input |
-| **Anima Caption → MOSS Layout JSON** | STRING → STRING | `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item |
+| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: the node below; a caption that already is layout JSON passes through as typed. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on. `task = decensor`: `no bar censor, no mosaic censor, uncensored`, likewise for the decensor LoRA. Both ignore the caption input |
+| **Anima Caption → MOSS Layout JSON** | STRING → STRING | `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item. A caption that already is layout JSON (an object with `summary`) passes through as typed, as in the trainer |
 
 Feed the layout output into `CLIP Text Encode` with MOSS-Image's text encoder, the
 colorize output into **MOSS i2i Text Encode** as its `text` (v2) or a plain `CLIP Text

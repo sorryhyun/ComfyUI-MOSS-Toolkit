@@ -1,11 +1,11 @@
 """MOSS i2i nodes: page-through-the-vision-tower text encode, and the VAE reference
 patch with its LoRA.
 
-``task = colorize`` on the Reference node runs the colorize recipe the LoRA was
-trained with (anima_lora ``project/moss_lora/plan.md``): v3 (``ref_isolate`` in the
-metadata) takes the page as a full-size isolated ref with a text-only prompt (plain
-CLIP Text Encode), v2 as a half-size joint ref with the page through the vision
-tower (MOSS i2i Text Encode).
+The Reference node sizes the ref from the recipe the LoRA was trained with
+(anima_lora ``project/moss_lora/plan.md``): an isolated ref (``ref_isolate`` in the
+metadata: colorize v3, sanitize, swap_text) is the full-size page with a text-only
+prompt (plain CLIP Text Encode); a joint ref (colorize v2) is the half-size page, with
+the page also through the vision tower (MOSS i2i Text Encode).
 
 Preprocessing matches anima_lora's colorize cache (``project/moss_lora/src/
 colorize_cache.py`` on ``i2i_probe``): the page is fit (cover + centre crop,
@@ -37,7 +37,9 @@ VISION_MIN_PIXELS = 65536  # the probe's Qwen2VLImageProcessor shortest_edge
 VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
 IMAGE_PAD = 248056
 WRAPPER_KEY = "moss_i2i_ref"
-TASKS = ("colorize", "custom")
+TASKS = ("auto",)
+# Saved before ``auto``: ``colorize`` runs as ``auto``, ``custom`` takes ``ref_scale``.
+LEGACY_TASKS = ("colorize", "custom")
 REF_CACHE = ("gpu", "cpu", "off")
 
 
@@ -187,23 +189,24 @@ def load_lora(model, lora_name, strength):
     }
 
 
-def colorize_recipe(meta):
-    """``(ref_scale, label)`` of the colorize recipe ``meta`` trained with: v3
-    (``ref_isolate``) full size, v2 half size. A stamped ``ref_scale`` wins."""
-    v3 = meta is None or meta["ref_isolate"]
-    scale = 1 if v3 else 2
+def ref_recipe(meta):
+    """``(ref_scale, label)`` of the recipe ``meta`` trained with: an isolated ref
+    (``ref_isolate``) full size, a joint ref (colorize v2) half size. A stamped
+    ``ref_scale`` wins."""
+    isolated = meta is None or meta["ref_isolate"]
+    scale = 1 if isolated else 2
     if meta is not None and meta["ref_scale"]:
         scale = int(meta["ref_scale"])
-    if v3:
-        return scale, "v3: isolated ref, text-only prompt (CLIP Text Encode, no page)"
-    return scale, "v2: joint ref, page through the vision tower (MOSS i2i Text Encode)"
+    if isolated:
+        return scale, "isolated ref, text-only prompt (CLIP Text Encode, no page)"
+    return scale, "colorize v2: joint ref, page through the vision tower (MOSS i2i Text Encode)"
 
 
 class MOSSi2iReference:
     """A MOSS i2i LoRA (e.g. colorize) plus the page as a clean VAE latent on RoPE's
     ``r = 1`` axis, in every forward and every CFG branch. The LoRA's metadata sets
-    the ref rows' timestep and isolation and checks ``ref_scale``; ``task = colorize``
-    sets ``ref_scale`` from the recipe the LoRA trained with. Works under any sampler
+    the ref rows' timestep and isolation, and ``ref_scale`` follows the recipe the LoRA
+    trained with. Works under any sampler
     that calls ``apply_model`` (KSampler, the MOSS Spectrum KSampler). Outputs an
     empty latent at the target size."""
 
@@ -230,20 +233,22 @@ class MOSSi2iReference:
                         "min": 1,
                         "max": 8,
                         "tooltip": (
-                            "Ref side = target side / ref_scale (task = custom only). "
-                            "Colorize v3 trains at 1 (full size), v2 at 2 (1/4 area)."
+                            "Read only by workflows saved with task = custom; auto "
+                            "takes the ref size from the LoRA (isolated ref: 1, full "
+                            "size; colorize v2: 2, 1/4 area)."
                         ),
                     },
                 ),
                 "task": (
                     list(TASKS),
                     {
-                        "default": "colorize",
+                        "default": "auto",
                         "tooltip": (
-                            "colorize: the recipe the LoRA trained with. v3 (ref_isolate "
-                            "in its metadata): full-size isolated ref, prompt through a "
-                            "plain CLIP Text Encode. v2: half-size ref, prompt through "
-                            "MOSS i2i Text Encode. custom: ref_scale as set."
+                            "auto: the recipe the LoRA trained with. Isolated ref "
+                            "(ref_isolate in its metadata: colorize v3, sanitize, "
+                            "swap_text): full size, prompt through a plain CLIP Text "
+                            "Encode. Joint ref (colorize v2): half size, prompt through "
+                            "MOSS i2i Text Encode."
                         ),
                     },
                 ),
@@ -265,10 +270,17 @@ class MOSSi2iReference:
 
     RETURN_TYPES = ("MODEL", "LATENT")
     FUNCTION = "patch"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, task):
+        # Naming ``task`` skips ComfyUI's combo check, so LEGACY_TASKS still load.
+        if task in TASKS or task in LEGACY_TASKS:
+            return True
+        return f"task {task!r} is not one of {TASKS}"
     CATEGORY = "MOSS-Image/i2i"
     DESCRIPTION = "Load a MOSS i2i LoRA and feed the page to MOSS-Image as a VAE reference latent (RoPE r = 1)."
 
-    def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="colorize", ref_cache="gpu"):
+    def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="auto", ref_cache="gpu"):
         if not _is_moss(model):
             raise ValueError("MOSS i2i Reference needs a MOSS-Image MODEL (moss-image node).")
         meta = None
@@ -281,9 +293,9 @@ class MOSSi2iReference:
                     "MOSS i2i: %s was trained without references; the ref is off its distribution",
                     lora_name,
                 )
-        if task == "colorize":
-            ref_scale, recipe = colorize_recipe(meta)
-            logger.info("MOSS i2i: colorize %s, ref_scale %d", recipe, ref_scale)
+        if task != "custom":
+            ref_scale, recipe = ref_recipe(meta)
+            logger.info("MOSS i2i: %s, ref_scale %d", recipe, ref_scale)
         elif meta is not None and meta["ref_scale"] and int(meta["ref_scale"]) != ref_scale:
             logger.warning(
                 "MOSS i2i: %s was trained at ref_scale %s, running %d",

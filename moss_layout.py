@@ -78,6 +78,26 @@ def _kb():
     return load_tag_knowledge_base(path)
 
 
+def is_layout_json(raw: str) -> bool:
+    """``raw`` is already a layout-JSON prompt (an object with ``summary``). A copy of
+    anima_lora ``library/moss/cache.py::is_layout_json`` — change both together."""
+    if not raw.startswith("{"):
+        return False
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(obj, dict) and "summary" in obj
+
+
+def to_layout_json(caption: str) -> str:
+    """``caption`` as the trainer's ``caption_format=layout_json`` encodes it: a
+    caption that already is layout JSON (swap_text's staged captions) as written,
+    else :func:`layout_json` (converting it again would nest the whole object in
+    ``summary.caption``)."""
+    return caption if is_layout_json(caption) else layout_json(caption, _kb())
+
+
 class AnimaCaptionToMossLayout:
     """Map an Anima-format caption onto MOSS-Image's layout-JSON prompt."""
 
@@ -114,7 +134,7 @@ class AnimaCaptionToMossLayout:
     )
 
     def convert(self, caption: str):
-        text = layout_json(caption.strip(), _kb())
+        text = to_layout_json(caption.strip())
         logger.info("AnimaCaptionToMossLayout: %s", text)
         return (text,)
 
@@ -187,7 +207,7 @@ def read_page(page) -> list[tuple[str, list]]:
 
 
 def _colorize_layout(caption, lines, size) -> str:
-    layout = caption_to_layout(caption, _kb())
+    layout = json.loads(caption) if is_layout_json(caption) else caption_to_layout(caption, _kb())
     items = [
         {"label": "text", "caption": "text", "text": t, "bbox": centered_box(b, size)}
         for t, b in lines
@@ -225,7 +245,8 @@ class MOSSCaptionHelper:
                     {
                         "default": "layout",
                         "tooltip": (
-                            "layout: the caption as layout JSON. colorize: the "
+                            "layout: the caption as layout JSON (a caption that "
+                            "already is layout JSON passes through). colorize: the "
                             "same, plus a text item per line the OCR reads off "
                             "the page, boxed on the target canvas. sanitize / "
                             "decensor: that LoRA's fixed caption, plain text; "
@@ -259,7 +280,7 @@ class MOSSCaptionHelper:
     def convert(self, caption, task, resolution, image=None):
         caption = caption.strip()
         if task == "layout":
-            text = layout_json(caption, _kb())
+            text = to_layout_json(caption)
         elif task in FIXED_CAPTIONS:
             text = FIXED_CAPTIONS[task]
             if caption and caption != text:

@@ -62,7 +62,7 @@
         1,
         1024,
         1,
-        "custom",
+        "auto",
         "gpu"
       ],
       "widgets_values_named": {
@@ -70,7 +70,7 @@
         "strength": 1,
         "resolution": 1024,
         "ref_scale": 1,
-        "task": "custom",
+        "task": "auto",
         "ref_cache": "gpu"
       }
     },
