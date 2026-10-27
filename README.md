@@ -7,7 +7,7 @@ Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on top of the
   source; the TE can be the INT8 or fp8 file.
 - **i2i** — image-to-image. First task: colorizing a B&W manga page with the colorize
   LoRA trained in anima_lora.
-- **Layout JSON / Caption Helper** — an Anima-format caption as MOSS's layout-JSON
+- **Caption Helper** — an Anima-format caption as MOSS's layout-JSON
   prompt, for LoRAs trained on `caption_format=layout_json` captions; for colorize,
   with the page's OCR lines added.
 
@@ -150,8 +150,7 @@ live `diffusion_model` runs a ref-aware copy of the `moss-image` forward.
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: the node below; a caption that already is layout JSON passes through as typed. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on. `task = decensor`: `no bar censor, no mosaic censor, uncensored`, likewise for the decensor LoRA. Both ignore the caption input |
-| **Anima Caption → MOSS Layout JSON** | STRING → STRING | `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item. A caption that already is layout JSON (an object with `summary`) passes through as typed, as in the trainer |
+| **MOSS Caption Helper** | STRING, task (+ IMAGE) → STRING | `task = layout`: `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item. Every meta or unknown tag ahead of the first count tag (`1girl`, `2boys`, …) is front matter and goes to `summary.meta`. A caption that already is layout JSON (an object with `summary`) passes through as typed, as in the trainer. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on. Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on. `task = decensor`: `no bar censor, no mosaic censor, uncensored`, likewise for the decensor LoRA. Both ignore the caption input |
 
 Feed the layout output into `CLIP Text Encode` with MOSS-Image's text encoder, the
 colorize output into **MOSS i2i Text Encode** as its `text` (v2) or a plain `CLIP Text
@@ -159,7 +158,7 @@ Encode` (v3), the sanitize and decensor outputs into a plain `CLIP Text Encode`.
 colour tags the LoRA trained on (copyright, `comic` for a manga page, hair / eye /
 clothing colours). The OCR is anime-tools' AnimeText detector with the manga VL
 reader on every box; both load for the read (~6 GB VRAM freed first) and unload
-after it, and their weights download on first use. Both nodes need
+after it, and their weights download on first use. The helper needs
 `anime-tools`; without it the toolkit loads the i2i nodes only and logs a warning:
 
 ```
@@ -168,8 +167,9 @@ pip install 'anime-tools @ git+https://github.com/sorryhyun/anime_tools'
 
 The danbooru tag KB (`danbooru_tags_classified.csv`) is looked up under
 `$ANIME_TOOLS_HOME` / `$ANIMA_HOME` / the ComfyUI folder (`models/`) and downloaded
-there on first use. The node used to ship in the Anima Tagger pack; the node id
-(`AnimaCaptionToMossLayout`) is unchanged, so old workflows load as-is.
+there on first use. The old **Anima Caption → MOSS Layout JSON** node
+(`AnimaCaptionToMossLayout`) is the helper's `task = layout`; it is deprecated and hidden
+from the node menu, but stays registered so saved workflows load as-is.
 
 ## License
 

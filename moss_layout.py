@@ -99,7 +99,12 @@ def to_layout_json(caption: str) -> str:
 
 
 class AnimaCaptionToMossLayout:
-    """Map an Anima-format caption onto MOSS-Image's layout-JSON prompt."""
+    """Map an Anima-format caption onto MOSS-Image's layout-JSON prompt.
+
+    Deprecated: ``MOSSCaptionHelper`` ``task = layout`` is the same conversion.
+    Kept registered (hidden from the node menu) so saved workflows still load."""
+
+    DEPRECATED = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -125,6 +130,7 @@ class AnimaCaptionToMossLayout:
     FUNCTION = "convert"
     CATEGORY = "MOSS-Image/text"
     DESCRIPTION = (
+        "Deprecated: use MOSS Caption Helper, task layout. "
         "Anima caption -> MOSS-Image layout JSON, byte-identical to what the "
         "anima_lora MOSS trainer encodes with caption_format=layout_json. "
         "Rating / meta, characters, series and @artists get their own summary "
@@ -270,7 +276,7 @@ class MOSSCaptionHelper:
     CATEGORY = "MOSS-Image/text"
     DESCRIPTION = (
         "Anima caption -> the prompt a MOSS LoRA trained on. layout: the layout "
-        "JSON of 'Anima Caption → MOSS Layout JSON'. colorize: the colorize LoRA's "
+        "JSON the anima_lora MOSS trainer encodes with caption_format=layout_json. colorize: the colorize LoRA's "
         "caption — that layout plus one text item per OCR-read line of the page, "
         "boxed in abs_centralized yxyx on the canvas the i2i nodes generate at "
         "(same resolution). Feed it to MOSS i2i Text Encode. sanitize / decensor: "

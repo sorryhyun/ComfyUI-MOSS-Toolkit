@@ -14,11 +14,12 @@ i2i (:mod:`.nodes`, self-contained, pulls no anima_lora code):
 
 Text (:mod:`.moss_layout`, registered only when ``anime-tools`` is installed):
 
-* ``AnimaCaptionToMossLayout`` — STRING -> STRING, an Anima caption as MOSS's
-  layout-JSON prompt.
-* ``MOSSCaptionHelper`` — STRING (+ IMAGE) -> STRING, per task: ``layout`` as above,
+* ``MOSSCaptionHelper`` — STRING (+ IMAGE) -> STRING, per task: ``layout`` an Anima
+  caption as MOSS's layout-JSON prompt,
   ``colorize`` that layout plus the page's OCR lines, the colorize LoRA's caption,
   ``sanitize`` / ``decensor`` that LoRA's fixed caption.
+* ``AnimaCaptionToMossLayout`` — deprecated, hidden from the menu; ``layout`` alone,
+  kept so saved workflows load.
 """
 
 import logging
