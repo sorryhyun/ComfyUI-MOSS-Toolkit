@@ -22,6 +22,14 @@ ref keys rotated for that call's text length (``_main_block``).
 dispatch is kept, so the uncond block-22 skip (SLG) still applies. It mirrors
 anima_lora's ``library/moss/model.py`` (``ref_span`` / ``ref_isolate`` /
 ``_ref_only``), which the colorize LoRAs were trained against.
+
+ComfyUI's own ``MOSSImage`` (``comfy.ldm.moss_image``, the Comfy-Org repack with fused
+q/k/v or the vendor shards) has the same reference mechanism built in, for ai-toolkit's
+edit LoRAs: ``[image | text | ref]``, the ref on ``r = 1`` at the image's ``f`` on its
+own centred grid, at t = 0, isolated (keys / values computed once, ``ref_kv``) or joint.
+On that model the wrapper passes the ref to it (``native_ref_conds``) instead. The two
+agree for a full-size ref at ``ref_timestep`` 0 or shared; a smaller ref (colorize v1 /
+v2) needs the stretched grid, so the ``moss-image`` model.
 """
 
 import logging
@@ -429,6 +437,42 @@ def _forward_cached(dit, kv, ref_hw, latent, context, vec, head, blocks_replace,
     return x.transpose(1, 2).reshape(1, -1, height, width)
 
 
+def native_ref_conds(model, ref, x, transformer_options, ref_timestep, ref_isolate, store, cache, model_key):
+    """Extra conds for ComfyUI's ``MOSSImage._forward`` that carry ``ref``; an isolated
+    ref's ``ref_kv`` is built once per ``model_key`` / device and kept in ``cache``
+    (``store`` gpu / cpu; off: rebuilt every forward)."""
+    if tuple(ref.shape[-2:]) != tuple(x.shape[-2:]):
+        raise ValueError(
+            f"MOSS i2i: ComfyUI's MOSS-Image model puts the ref on its own grid, so the ref "
+            f"must match the image ({tuple(ref.shape[-2:])} vs {tuple(x.shape[-2:])}): a "
+            f"half-size ref (colorize v1 / v2) needs the moss-image node's DiT "
+            f"(MOSS-Image Loader on a moss_image/<name>/transformer dir)"
+        )
+    if ref_timestep is None:
+        if ref_isolate:
+            raise ValueError("MOSS i2i: ComfyUI's MOSS-Image model isolates refs at t = 0 only")
+        return {"ref_latents": [ref], "ref_latents_method": "index"}
+    if ref_timestep != 0:
+        raise ValueError(
+            f"MOSS i2i: ComfyUI's MOSS-Image model runs refs at t = 0 or the step's, not "
+            f"ref_timestep {ref_timestep:g}"
+        )
+    if not ref_isolate:
+        return {"ref_latents": [ref], "ref_latents_method": "index_timestep_zero"}
+    if store == "off":
+        return {"ref_latents": [ref], "ref_latents_method": "index_timestep_zero_isolated"}
+    key = (model_key, x.device)
+    if cache.get("key") != key:
+        cache.clear()
+        dit = model.diffusion_model
+        kv = dit.preprocess_refs([ref.to(x.device, model.get_dtype_inference())], transformer_options)
+        if store == "cpu":
+            kv = kv.cpu().pin_memory()
+        cache.update(key=key, kv=kv)
+        logger.info("MOSS i2i: ref K/V cached (ComfyUI MOSS-Image), %.2f GB on %s", kv.nbytes / 2**30, store)
+    return {"ref_kv": cache["kv"]}
+
+
 def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cache="gpu"):
     """``APPLY_MODEL`` wrapper: for the length of one ``_apply_model`` call, the live
     ``diffusion_model`` runs ``forward_with_ref``. Spectrum's cached steps never
@@ -440,12 +484,19 @@ def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cach
     resolves the module from ``executor.class_obj`` each call, so a reloaded model
     is followed; the cache is keyed on the model's weight patches."""
     cache = {}
+    native = {}
     ref_kv = None if ref_cache == "off" else RefKV(ref_cache)
 
     def wrapper(executor, *args, **kwargs):
         dit = executor.class_obj.diffusion_model
         model_key = (id(dit), getattr(executor.class_obj, "current_weight_patches_uuid", None))
         x = args[0]
+        if hasattr(dit, "preprocess_refs"):
+            options = args[5] if len(args) > 5 else kwargs.get("transformer_options", {})
+            conds = native_ref_conds(
+                executor.class_obj, ref, x, options, ref_timestep, ref_isolate, ref_cache, native, model_key
+            )
+            return executor(*args, **{**kwargs, **conds})
         key = x.device
         if key not in cache:
             cache.clear()

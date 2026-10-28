@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from . import lora_compat
 from .reference import make_apply_model_wrapper
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,10 @@ VISION_MIN_PIXELS = 65536  # the probe's Qwen2VLImageProcessor shortest_edge
 VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
 IMAGE_PAD = 248056
 WRAPPER_KEY = "moss_i2i_ref"
-TASKS = ("auto",)
+# ai-toolkit edit LoRAs carry no ref metadata: isolated (its kv_cache, on in its edit
+# presets) unless this task says otherwise.
+AITK_JOINT = "ai-toolkit, kv_cache off"
+TASKS = ("auto", AITK_JOINT)
 # Saved before ``auto``: ``colorize`` runs as ``auto``, ``custom`` takes ``ref_scale``.
 LEGACY_TASKS = ("colorize", "custom")
 REF_CACHE = ("gpu", "cpu", "off")
@@ -168,17 +172,31 @@ class MOSSi2iTextEncode:
         return (clip.encode_from_tokens_scheduled(tokens),)
 
 
-def load_lora(model, lora_name, strength):
-    """``(model, meta)``: an anima_lora MOSS LoRA on ``model``, and the reference
-    settings it trained with. The keys are plain ``lora_unet_layers_*`` (channel
-    scaling is folded into the stored down weights), so this is ComfyUI's LoRA patch."""
+def is_ai_toolkit(meta):
+    """Whether ``meta`` is an ai-toolkit MOSS-Image save."""
+    return meta.get("ss_base_model_version") == "moss_image" or '"ai-toolkit"' in meta.get("software", "")
+
+
+def load_lora(model, lora_name, strength, task="auto"):
+    """``(model, meta)``: a MOSS LoRA on ``model`` (either q/k/v layout, see
+    ``lora_compat``), and the reference settings it trained with. anima_lora stamps
+    them; an ai-toolkit edit LoRA trained its refs full size at t = 0, isolated unless
+    ``task`` is ``AITK_JOINT``."""
     path = folder_paths.get_full_path_or_raise("loras", lora_name)
     lora, meta = comfy.utils.load_torch_file(path, safe_load=True, return_metadata=True)
     meta = meta or {}
     if meta.get("base_model", "MOSS-Image") != "MOSS-Image":
         logger.warning("MOSS i2i: %s was trained on %s", lora_name, meta["base_model"])
     if strength:
-        model, _ = comfy.sd.load_lora_for_models(model, None, lora, strength, 0)
+        model = lora_compat.load(model, lora, strength, lora_name)
+    if is_ai_toolkit(meta):
+        return model, {
+            "reference_latents": 1,
+            "ref_scale": "1",
+            "ref_timestep": 0.0,
+            "ref_isolate": task != AITK_JOINT,
+            "label": "ai-toolkit edit",
+        }
     return model, {
         "reference_latents": int(meta.get("reference_latents", 0) or 0),
         "ref_scale": meta.get("ref_scale"),
@@ -197,6 +215,9 @@ def ref_recipe(meta):
     scale = 1 if isolated else 2
     if meta is not None and meta["ref_scale"]:
         scale = int(meta["ref_scale"])
+    if meta is not None and "label" in meta:
+        joint = "" if isolated else ", kv_cache off (joint)"
+        return scale, f"{meta['label']}{joint}: full-size ref at t = 0"
     if isolated:
         return scale, "isolated ref, text-only prompt (CLIP Text Encode, no page)"
     return scale, "colorize v2: joint ref, page through the vision tower (MOSS i2i Text Encode)"
@@ -219,7 +240,9 @@ class MOSSi2iReference:
                 "image": ("IMAGE",),
                 "lora_name": (
                     ["None"] + folder_paths.get_filename_list("loras"),
-                    {"tooltip": "A LoRA trained with references (reference_latents in its metadata)."},
+                    {"tooltip": "A LoRA trained with references (reference_latents in its metadata, "
+                     "or an ai-toolkit edit LoRA). Fused (proj.qkv) or separate q/k/v keys, on "
+                     "either DiT layout."},
                 ),
                 "strength": (
                     "FLOAT",
@@ -248,7 +271,9 @@ class MOSSi2iReference:
                             "(ref_isolate in its metadata: colorize v3, sanitize, "
                             "swap_text): full size, prompt through a plain CLIP Text "
                             "Encode. Joint ref (colorize v2): half size, prompt through "
-                            "MOSS i2i Text Encode."
+                            "MOSS i2i Text Encode. An ai-toolkit edit LoRA (no ref "
+                            "metadata): full size at t = 0, isolated (its kv_cache); "
+                            "pick 'ai-toolkit, kv_cache off' for one trained without."
                         ),
                     },
                 ),
@@ -282,12 +307,12 @@ class MOSSi2iReference:
 
     def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="auto", ref_cache="gpu"):
         if not _is_moss(model):
-            raise ValueError("MOSS i2i Reference needs a MOSS-Image MODEL (moss-image node).")
+            raise ValueError("MOSS i2i Reference needs a MOSS-Image MODEL.")
         meta = None
         if lora_name == "None":
             logger.warning("MOSS i2i: no LoRA; the base never saw a reference")
         else:
-            model, meta = load_lora(model, lora_name, strength)
+            model, meta = load_lora(model, lora_name, strength, task)
             if not meta["reference_latents"]:
                 logger.warning(
                     "MOSS i2i: %s was trained without references; the ref is off its distribution",

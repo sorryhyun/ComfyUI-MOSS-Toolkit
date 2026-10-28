@@ -76,7 +76,7 @@ text-only prompt (a plain CLIP Text Encode). v2 uses both paths, the ref at half
 | Node | In → out | Notes |
 |---|---|---|
 | **MOSS i2i Text Encode (page + text)** | CLIP, IMAGE, text → CONDITIONING | `<|vision_start|>[page]<|vision_end|>{text}`. Empty text = page only. The page is fit to the target size and seen at that pixel count (~1000 tokens at 1 MP) |
-| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; plain `lora_unet_layers_*`) and reads `reference_latents`, `ref_scale`, `ref_timestep` and `ref_isolate` from its metadata. `task = auto` sets the ref size from the recipe the LoRA trained with: full size for an isolated ref (colorize v3, sanitize, swap_text), half for colorize v2. Workflows saved with `task = colorize` run as `auto`; ones saved with `task = custom` still load and use `ref_scale` (ref at `1/ref_scale` per side, 2 = 1/4 area). The ref goes into every forward and every CFG branch. `ref_cache`: see below. Also outputs an empty latent at the target size |
+| **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; any key layout, see [LoRA files](#lora-files)) and reads `reference_latents`, `ref_scale`, `ref_timestep` and `ref_isolate` from its metadata. `task = auto` sets the ref size from the recipe the LoRA trained with: full size for an isolated ref (colorize v3, sanitize, swap_text), half for colorize v2. Workflows saved with `task = colorize` run as `auto`; ones saved with `task = custom` still load and use `ref_scale` (ref at `1/ref_scale` per side, 2 = 1/4 area). The ref goes into every forward and every CFG branch. `ref_cache`: see below. Also outputs an empty latent at the target size |
 
 ### Ref K/V cache
 
@@ -129,6 +129,40 @@ block-22 skip, use the MOSS Spectrum KSampler. anima_lora's colorize eval ran 30
 CFG 3, ER-SDE, Spectrum at its defaults, with the fp8 TE. That is the v3 example
 workflow, except that ComfyUI's σ grid is not snapped to the training grid and its
 ER-SDE noise differs, so a seed does not reproduce the eval's image.
+
+### LoRA files
+
+MOSS-Image DiTs come in two layouts: the vendor's separate `layers.N.proj.{q,k,v}` (the
+`moss-image` node; `moss_image/<name>/transformer` dirs) and the Comfy-Org repack's fused
+`layers.N.proj.qkv` (ComfyUI's own MOSS-Image model, which ai-toolkit trains on). ComfyUI
+maps a separate-q/k/v LoRA onto a fused model by row slices, but not the reverse, so a
+fused LoRA (ai-toolkit's LoKr, ai-toolkit saves before 2026-10-17) patched nothing on the
+`moss-image` model. The Reference node splits a fused group by rows first: exact for
+LoRA, LoHa and LoKr (a LoKr whose `w1` rows do not divide by 3 becomes three full
+`diff` patches; DoRA groups stay fused and are reported). `transformer.` and bare
+module paths take the `diffusion_model.` prefix. Every load logs how many weights it
+patched, names the non-block ones (`shared_block_modulation`, a `mod_rank` LoRA's
+modulation adapter), warns with the modules this model has no weight for, and fails
+if nothing matched.
+
+An ai-toolkit edit LoRA (`ss_base_model_version = moss_image`) carries no ref metadata.
+`task = auto` runs it as ai-toolkit trains it: the page at full size, its rows at t = 0,
+isolated (ai-toolkit's `kv_cache`, on in its edit presets); `task = ai-toolkit,
+kv_cache off` runs the joint ref instead. ai-toolkit also shows the reference to the
+text encoder (`Picture 1:` and the image at ≤ 384² px), which ComfyUI's **Text Encode
+MOSS-Image Edit** builds (leave its VAE unconnected so it adds no second reference).
+
+### Model layouts
+
+On ComfyUI's own MOSS-Image model (Load Diffusion Model on the Comfy-Org repack or the
+vendor shards) the node does not run its copy of the forward; it passes the ref to the
+model's built-in reference path. An isolated ref at t = 0 goes in as `ref_kv`, built
+once per weight patch set (`ref_cache` gpu / cpu; off: recomputed each forward). A
+joint ref goes in as `index_timestep_zero`, a shared-timestep one as `index`. The
+outputs match the `moss-image` path for a full-size ref (colorize v3, sanitize,
+swap_text, ai-toolkit). That model puts a ref on its own grid, not stretched onto the
+target, so a half-size ref (colorize v1 / v2) stops with an error there and needs
+the `moss-image` model (MOSS-Image Loader on a `transformer` dir).
 
 ### Compatibility
 
