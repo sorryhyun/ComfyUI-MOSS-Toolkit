@@ -25,9 +25,18 @@ ComfyUI builds text encoders with full-precision matmuls (an INT8 weight is dequ
 per forward) and switches its quantized kernels on only around ``CLIP.generate``.
 ``int8_matmul`` puts the encode under the same switch, so an INT8 TE runs W8A8
 (``comfy_kitchen.int8_linear``), as anima_lora encodes its caches.
+
+``stream`` fp32 runs the residual stream, modulation, gates, norms, embedders and head
+in fp32 around the bf16 block GEMMs, as anima_lora's ``GenerateRequest.stream``
+(``library/moss/loader.py::stream_fp32_``): every DiT parameter but the block linears'
+and ``q_norm`` / ``k_norm`` weights is cast to fp32. The DiT then loads on ComfyUI's
+plain ``ModelPatcher`` (not the dynamic one, whose weights stay mmapped in the file's
+dtype), and the ``moss-image`` model's ``_rotate`` returns its input's dtype, so the
+fp32 RoPE rows do not lift bf16 queries and keys past the bf16 values.
 """
 
 import os
+import re
 import sys
 
 import comfy.ops
@@ -42,6 +51,10 @@ if MOSS_FOLDER not in folder_paths.folder_names_and_paths:
 
 COMPONENTS = ("transformer", "text_encoder", "tokenizer", "vae")
 WEIGHT_DTYPES = ["default", "bf16", "fp32", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]
+STREAMS = ["bf16", "fp32"]
+# Kept in the weight dtype under the fp32 stream: the block GEMMs, and q/k norms whose
+# input is a bf16 GEMM output.
+BLOCK_KEEP = re.compile(r"layers\.\d+\.(proj\.\w+|[qk]_norm)")
 
 
 def _moss_image():
@@ -160,6 +173,45 @@ def load_vae_file(path):
     return vae
 
 
+def _rotate_in_input_dtype(module):
+    """``module._rotate`` with its result cast back to ``x``'s dtype; for a bf16 stream
+    (bf16 RoPE rows) that is the identity."""
+    rotate = module._rotate
+    if getattr(rotate, "keeps_dtype", False):
+        return
+
+    def _rotate(x, rope):
+        return rotate(x, rope).to(x.dtype)
+
+    _rotate.keeps_dtype = True
+    module._rotate = _rotate
+
+
+def stream_fp32(patcher):
+    """Every plain floating DiT parameter outside ``BLOCK_KEEP`` to fp32."""
+    dit = patcher.model.diffusion_model
+    keep = {id(m.weight) for n, m in dit.named_modules() if BLOCK_KEEP.fullmatch(n)}
+    for p in dit.parameters():
+        if id(p) not in keep and type(p.data) is torch.Tensor and p.is_floating_point():
+            p.data = p.data.float()
+    _rotate_in_input_dtype(sys.modules[type(dit).__module__])
+
+
+def load_dit(dit, weight_dtype, stream="bf16", disable_dynamic=False):
+    hf, loaders = _moss_image()
+    fp32 = stream == "fp32"
+    dit_roots = _roots("transformer")
+    if dit in dit_roots:
+        model = hf.load_hf_model(dit_roots[dit], weight_dtype, disable_dynamic or fp32)
+    else:
+        path = folder_paths.get_full_path_or_raise("diffusion_models", dit)
+        model = loaders.load_model(path, weight_dtype, disable_dynamic or fp32)
+    if fp32:
+        stream_fp32(model)
+        model.cached_patcher_init = (load_dit, (dit, weight_dtype, stream))
+    return model
+
+
 def _default(options, preferred):
     return next((o for o in preferred if o in options), options[0] if options else None)
 
@@ -195,6 +247,14 @@ class MOSSImageLoader:
                     "encodes). Off: the weight is dequantised for a bf16 matmul (ComfyUI's "
                     "default, closer to bf16). No effect on a bf16 / fp8 TE.",
                 }),
+                "stream": (STREAMS, {
+                    "default": "bf16",
+                    "advanced": True,
+                    "tooltip": "DiT residual stream precision. fp32: the stream, modulation, "
+                    "norms, embedders and head run in fp32 around the bf16 block GEMMs "
+                    "(+1.5% time, +0.6 GB, ComfyUI's non-dynamic model loading). Renders move "
+                    "a few /255 in detail; neither is consistently better.",
+                }),
             },
         }
 
@@ -202,14 +262,11 @@ class MOSSImageLoader:
     FUNCTION = "load"
     CATEGORY = "MOSS-Image"
 
-    def load(self, dit, weight_dtype, text_encoder, vae, text_device="default", int8_matmul=True):
+    def load(
+        self, dit, weight_dtype, text_encoder, vae, text_device="default", int8_matmul=True, stream="bf16"
+    ):
         hf, loaders = _moss_image()
-
-        dit_roots = _roots("transformer")
-        if dit in dit_roots:
-            model = hf.load_hf_model(dit_roots[dit], weight_dtype)
-        else:
-            model = loaders.load_model(folder_paths.get_full_path_or_raise("diffusion_models", dit), weight_dtype)
+        model = load_dit(dit, weight_dtype, stream)
 
         te_roots, te_files = _roots("text_encoder"), _moss_te_files()
         if text_encoder in te_roots:

@@ -48,6 +48,12 @@ single-file TE is tokenized with `moss_image/<name>/tokenizer/`: the DiT's own, 
 `MOSS-Image-Base`'s, else ComfyUI's bundled Qwen3.5 tokenizer. The vision tower is in the
 file, so the i2i text encode works with it. The loading is the `moss-image` node's.
 
+`stream` (advanced, `bf16` default) set to `fp32` runs the DiT's residual stream,
+modulation, norms, embedders and head in fp32 around the bf16 block GEMMs, as anima_lora's
+`generate --stream fp32`. The prediction error against an fp32 forward drops 2.4–3.5× for
++1.5% time and +0.6 GB. Renders change in detail, and neither precision is consistently
+better. The DiT then loads on ComfyUI's non-dynamic model management.
+
 ## i2i
 
 MOSS-Image has no image conditioning. This node adds two paths:
