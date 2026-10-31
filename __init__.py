@@ -5,6 +5,11 @@ Loader (:mod:`.loader`, the ``moss-image`` node's loading code):
 * ``MOSSImageLoader`` — DiT + Qwen3.5 TE (bf16 dir, INT8 or fp8 file) + VAE, each from its
   own source -> MODEL, CLIP, VAE.
 
+Stream (:mod:`.stream`):
+
+* ``MOSSStreamFP32`` — MODEL -> MODEL, the fp32 residual stream on ComfyUI's own
+  ``MOSSImage`` (bf16 or INT8).
+
 i2i (:mod:`.nodes`, self-contained, pulls no anima_lora code):
 
 * ``MOSSi2iTextEncode`` — CLIP + IMAGE + text -> CONDITIONING, the page through
@@ -24,10 +29,18 @@ Text (:mod:`.moss_layout`, registered only when ``anime-tools`` is installed):
 
 import logging
 
-from . import loader, nodes
+from . import loader, nodes, stream
 
-NODE_CLASS_MAPPINGS = {**loader.NODE_CLASS_MAPPINGS, **nodes.NODE_CLASS_MAPPINGS}
-NODE_DISPLAY_NAME_MAPPINGS = {**loader.NODE_DISPLAY_NAME_MAPPINGS, **nodes.NODE_DISPLAY_NAME_MAPPINGS}
+NODE_CLASS_MAPPINGS = {
+    **loader.NODE_CLASS_MAPPINGS,
+    **stream.NODE_CLASS_MAPPINGS,
+    **nodes.NODE_CLASS_MAPPINGS,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    **loader.NODE_DISPLAY_NAME_MAPPINGS,
+    **stream.NODE_DISPLAY_NAME_MAPPINGS,
+    **nodes.NODE_DISPLAY_NAME_MAPPINGS,
+}
 
 try:
     from . import moss_layout

@@ -4,7 +4,9 @@ Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on top of the
 `moss-image` node's MODEL / CLIP / VAE (formerly **MOSS i2i**, `comfyui-moss-i2i`):
 
 - **Loader** — DiT, Qwen3.5 text encoder and VAE in one node, each from its own
-  source; the TE can be the INT8 or fp8 file.
+  source; the DiT and the TE can be INT8 files.
+- **fp32 Stream** — a MODEL patch that runs the residual stream in fp32 around bf16 or
+  INT8 block GEMMs.
 - **i2i** — image-to-image. First task: colorizing a B&W manga page with the colorize
   LoRA trained in anima_lora.
 - **Caption Helper** — an Anima-format caption as MOSS's layout-JSON
@@ -48,11 +50,41 @@ single-file TE is tokenized with `moss_image/<name>/tokenizer/`: the DiT's own, 
 `MOSS-Image-Base`'s, else ComfyUI's bundled Qwen3.5 tokenizer. The vision tower is in the
 file, so the i2i text encode works with it. The loading is the `moss-image` node's.
 
+A DiT file with fused `proj.qkv` linears or quantized weights (Comfy-Org's `moss_image_*`
+files, INT8 included) loads through ComfyUI's own loader and model, the same as `Load
+Diffusion Model`. The `moss-image` model only reads separate q/k/v. ComfyUI's model takes
+its timestep as σ, not 1000·σ, so it does not use the `ModelSamplingSD3` from `moss-image`
+workflows, which samples noise there: leave the shift at its default 5, or set it with
+`ModelSamplingAuraFlow`.
+
 `stream` (advanced, `bf16` default) set to `fp32` runs the DiT's residual stream,
-modulation, norms, embedders and head in fp32 around the bf16 block GEMMs, as anima_lora's
+modulation, norms, embedders and head in fp32 around the block GEMMs, as anima_lora's
 `generate --stream fp32`. The prediction error against an fp32 forward drops 2.4–3.5× for
 +1.5% time and +0.6 GB. Renders change in detail, and neither precision is consistently
-better. The DiT then loads on ComfyUI's non-dynamic model management.
+better. On a `moss-image` DiT the model then loads on ComfyUI's non-dynamic model
+management; on ComfyUI's model it is the MODEL patch below.
+
+## fp32 stream patch
+
+| Node | In → out | Notes |
+|---|---|---|
+| **MOSS-Image fp32 Stream** | MODEL → MODEL | `stream = fp32` for a MODEL from `Load Diffusion Model`, bf16 or INT8 |
+
+No weight changes and nothing reloads, so dynamic VRAM stays on and the node can sit
+anywhere in the MODEL chain: the sampled latent stays fp32 going in, and only the blocks'
+GEMM inputs and the attention stay in the model's compute dtype (INT8 GEMMs stay INT8).
+An isolated ref's keys and values stay on a stream in the compute dtype, a joint ref runs
+in fp32. The `moss-image` node's DiT casts its weights instead, which has to
+happen at load time: the node raises on it and points to the Loader's `stream` knob.
+
+Prediction error of MOSS-Image Base against an fp32 forward (relative L2, one latent,
+RTX 5070 Ti). 30 steps at 1024² with CFG took 14 s against 13 s:
+
+| σ | bf16 | bf16 + stream | INT8 | INT8 + stream |
+|---|---|---|---|---|
+| 0.9 | 0.0204 | 0.0042 | 0.0265 | 0.0157 |
+| 0.5 | 0.0182 | 0.0073 | 0.0293 | 0.0247 |
+| 0.2 | 0.0324 | 0.0125 | 0.0527 | 0.0435 |
 
 ## i2i
 
