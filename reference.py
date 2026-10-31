@@ -29,7 +29,7 @@ edit LoRAs: ``[image | text | ref]``, the ref on ``r = 1`` at the image's ``f`` 
 own centred grid, at t = 0, isolated (keys / values computed once, ``ref_kv``) or joint.
 On that model the wrapper passes the ref to it (``native_ref_conds``) instead. The two
 agree for a full-size ref at ``ref_timestep`` 0 or shared; a smaller ref (colorize v1 /
-v2) needs the stretched grid, so the ``moss-image`` model.
+v2) needs the stretched grid, so the ``moss-image`` node's own loader.
 """
 
 import logging
@@ -445,8 +445,7 @@ def native_ref_conds(model, ref, x, transformer_options, ref_timestep, ref_isola
         raise ValueError(
             f"MOSS i2i: ComfyUI's MOSS-Image model puts the ref on its own grid, so the ref "
             f"must match the image ({tuple(ref.shape[-2:])} vs {tuple(x.shape[-2:])}): a "
-            f"half-size ref needs the moss-image node's DiT "
-            f"(MOSS-Image Loader on a moss_image/<name>/transformer dir)"
+            f"half-size ref needs the moss-image node's DiT (its MOSS-Image HF Loader)"
         )
     if ref_timestep is None:
         if ref_isolate:

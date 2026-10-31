@@ -167,7 +167,7 @@ class MOSSi2iTextEncode:
                         placed += 1
         if placed != 1:
             raise RuntimeError(
-                f"MOSS i2i Text Encode placed {placed} images; expected 1 (is this the moss-image CLIP?)"
+                f"MOSS i2i Text Encode placed {placed} images; expected 1 (is this a MOSS-Image CLIP?)"
             )
         return (clip.encode_from_tokens_scheduled(tokens),)
 

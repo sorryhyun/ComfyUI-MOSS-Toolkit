@@ -1,7 +1,8 @@
 # MOSS Toolkit for ComfyUI
 
-Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on top of the
-`moss-image` node's MODEL / CLIP / VAE (formerly **MOSS i2i**, `comfyui-moss-i2i`):
+Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on ComfyUI's own
+MOSS-Image support (formerly **MOSS i2i**, `comfyui-moss-i2i`). The `moss-image` node is
+not required:
 
 - **Loader** — DiT, Qwen3.5 text encoder and VAE in one node, each from its own
   source; the DiT and the TE can be INT8 files.
@@ -19,8 +20,8 @@ Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on top of the
 |---|---|---|
 | **MOSS-Image Loader (DiT + TE + VAE)** | → MODEL, CLIP, VAE | Picks each part on its own, so SFT's DiT pairs with Base's TE and VAE |
 
-The `moss_image` model folder is the one the `moss-image` node registers
-(`models/moss_image/`, or `moss_image:` in `extra_model_paths.yaml`).
+The Loader registers the `moss_image` model folder (`models/moss_image/`, or
+`moss_image:` in `extra_model_paths.yaml`).
 
 | Input | Options |
 |---|---|
@@ -45,24 +46,22 @@ encoder's weights for a bf16 matmul. RTX 5070 Ti, 20 prompts, embedding error vs
 | INT8, `int8_matmul` off | 873 | 0.036 |
 | fp8 | 883 | 0.045 |
 
-W8A8 is what anima_lora encodes MOSS captions with by default. A
-single-file TE is tokenized with `moss_image/<name>/tokenizer/`: the DiT's own, else
-`MOSS-Image-Base`'s, else ComfyUI's bundled Qwen3.5 tokenizer. The vision tower is in the
-file, so the i2i text encode works with it. The loading is the `moss-image` node's.
+W8A8 is what anima_lora encodes MOSS captions with by default. Every TE is tokenized with
+ComfyUI's bundled Qwen3.5 tokenizer. The vision tower is in the file, so the i2i text
+encode works with it.
 
-A DiT file with fused `proj.qkv` linears or quantized weights (Comfy-Org's `moss_image_*`
-files, INT8 included) loads through ComfyUI's own loader and model, the same as `Load
-Diffusion Model`. The `moss-image` model only reads separate q/k/v. ComfyUI's model takes
-its timestep as σ, not 1000·σ, so it does not use the `ModelSamplingSD3` from `moss-image`
-workflows, which samples noise there: leave the shift at its default 5, or set it with
-`ModelSamplingAuraFlow`.
+Everything loads through ComfyUI's own loaders and `MOSSImage` model, the same as `Load
+Diffusion Model`: vendor shards (separate q/k/v), Comfy-Org's `moss_image_*` files with
+fused `proj.qkv`, and INT8 files. That model takes its timestep as σ, not 1000·σ, so a
+saved workflow's `ModelSamplingSD3` samples noise there: remove it (the shift defaults
+to 5) or use `ModelSamplingAuraFlow`. **KSampler (Spectrum for MOSS)** sets this itself
+(Spectrum pack 2.13.1 or later).
 
 `stream` (advanced, `bf16` default) set to `fp32` runs the DiT's residual stream,
 modulation, norms, embedders and head in fp32 around the block GEMMs, as anima_lora's
 `generate --stream fp32`. The prediction error against an fp32 forward drops 2.4–3.5× for
 +1.5% time and +0.6 GB. Renders change in detail, and neither precision is consistently
-better. On a `moss-image` DiT the model then loads on ComfyUI's non-dynamic model
-management; on ComfyUI's model it is the MODEL patch below.
+better. It is the MODEL patch below.
 
 ## fp32 stream patch
 
@@ -74,8 +73,7 @@ No weight changes and nothing reloads, so dynamic VRAM stays on and the node can
 anywhere in the MODEL chain: the sampled latent stays fp32 going in, and only the blocks'
 GEMM inputs and the attention stay in the model's compute dtype (INT8 GEMMs stay INT8).
 An isolated ref's keys and values stay on a stream in the compute dtype, a joint ref runs
-in fp32. The `moss-image` node's DiT casts its weights instead, which has to
-happen at load time: the node raises on it and points to the Loader's `stream` knob.
+in fp32. The node raises on a `moss-image` node DiT.
 
 Prediction error of MOSS-Image Base against an fp32 forward (relative L2, one latent,
 RTX 5070 Ti). 30 steps at 1024² with CFG took 14 s against 13 s:
@@ -200,7 +198,8 @@ joint ref goes in as `index_timestep_zero`, a shared-timestep one as `index`. Th
 outputs match the `moss-image` path for a full-size ref (colorize v3, sanitize,
 swap_text, ai-toolkit). That model puts a ref on its own grid, not stretched onto the
 target, so a half-size ref (colorize v1 / v2) stops with an error there and needs
-the `moss-image` model (MOSS-Image Loader on a `transformer` dir).
+the `moss-image` node's model: install that node and load with its **MOSS-Image HF
+Loader**, then use `ModelSamplingSD3` as before.
 
 ### Compatibility
 

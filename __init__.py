@@ -1,6 +1,6 @@
-"""MOSS Toolkit ComfyUI custom nodes, on the ``moss-image`` node's MODEL / CLIP / VAE.
+"""MOSS Toolkit ComfyUI custom nodes, on ComfyUI's own MOSS-Image support.
 
-Loader (:mod:`.loader`, the ``moss-image`` node's loading code):
+Loader (:mod:`.loader`):
 
 * ``MOSSImageLoader`` — DiT + Qwen3.5 TE (bf16 dir, INT8 or fp8 file) + VAE, each from its
   own source -> MODEL, CLIP, VAE.
