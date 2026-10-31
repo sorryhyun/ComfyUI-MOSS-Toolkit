@@ -445,7 +445,7 @@ def native_ref_conds(model, ref, x, transformer_options, ref_timestep, ref_isola
         raise ValueError(
             f"MOSS i2i: ComfyUI's MOSS-Image model puts the ref on its own grid, so the ref "
             f"must match the image ({tuple(ref.shape[-2:])} vs {tuple(x.shape[-2:])}): a "
-            f"half-size ref (colorize v1 / v2) needs the moss-image node's DiT "
+            f"half-size ref needs the moss-image node's DiT "
             f"(MOSS-Image Loader on a moss_image/<name>/transformer dir)"
         )
     if ref_timestep is None:

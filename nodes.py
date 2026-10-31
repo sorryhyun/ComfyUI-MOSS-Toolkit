@@ -209,7 +209,7 @@ def load_lora(model, lora_name, strength, task="auto"):
 
 def ref_recipe(meta):
     """``(ref_scale, label)`` of the recipe ``meta`` trained with: an isolated ref
-    (``ref_isolate``) full size, a joint ref (colorize v2) half size. A stamped
+    (``ref_isolate``) full size, a joint ref half size. A stamped
     ``ref_scale`` wins."""
     isolated = meta is None or meta["ref_isolate"]
     scale = 1 if isolated else 2
@@ -220,11 +220,11 @@ def ref_recipe(meta):
         return scale, f"{meta['label']}{joint}: full-size ref at t = 0"
     if isolated:
         return scale, "isolated ref, text-only prompt (CLIP Text Encode, no page)"
-    return scale, "colorize v2: joint ref, page through the vision tower (MOSS i2i Text Encode)"
+    return scale, "joint ref, page through the vision tower (MOSS i2i Text Encode)"
 
 
 class MOSSi2iReference:
-    """A MOSS i2i LoRA (e.g. colorize) plus the page as a clean VAE latent on RoPE's
+    """A MOSS i2i LoRA plus the page as a clean VAE latent on RoPE's
     ``r = 1`` axis, in every forward and every CFG branch. The LoRA's metadata sets
     the ref rows' timestep and isolation, and ``ref_scale`` follows the recipe the LoRA
     trained with. Works under any sampler
@@ -258,7 +258,7 @@ class MOSSi2iReference:
                         "tooltip": (
                             "Read only by workflows saved with task = custom; auto "
                             "takes the ref size from the LoRA (isolated ref: 1, full "
-                            "size; colorize v2: 2, 1/4 area)."
+                            "size; joint ref: 2, 1/4 area)."
                         ),
                     },
                 ),
@@ -268,9 +268,8 @@ class MOSSi2iReference:
                         "default": "auto",
                         "tooltip": (
                             "auto: the recipe the LoRA trained with. Isolated ref "
-                            "(ref_isolate in its metadata: colorize v3, sanitize, "
-                            "swap_text): full size, prompt through a plain CLIP Text "
-                            "Encode. Joint ref (colorize v2): half size, prompt through "
+                            "(ref_isolate in its metadata): full size, prompt through "
+                            "a plain CLIP Text Encode. Joint ref: half size, prompt through "
                             "MOSS i2i Text Encode. An ai-toolkit edit LoRA (no ref "
                             "metadata): full size at t = 0, isolated (its kv_cache); "
                             "pick 'ai-toolkit, kv_cache off' for one trained without."
@@ -282,7 +281,7 @@ class MOSSi2iReference:
                     {
                         "default": "gpu",
                         "tooltip": (
-                            "An isolated ref (colorize v3) depends on the page alone: "
+                            "An isolated ref depends on the page alone: "
                             "run it through the blocks once and keep its keys / values "
                             "(~2.1 GB bf16 at 1 MP), so each forward runs the image and "
                             "text rows only. cpu: kept in host memory, copied in per "

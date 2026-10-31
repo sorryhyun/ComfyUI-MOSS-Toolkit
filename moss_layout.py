@@ -6,7 +6,8 @@ this node runs the same function so a prompt typed in Anima format reaches the
 text encoder as the identical string. The output goes into any STRING input
 (``CLIPTextEncode`` with MOSS-Image's text encoder).
 
-``MOSSCaptionHelper`` adds a task switch: ``layout`` is the conversion above,
+``MOSSCaptionHelper`` adds a task switch: ``default`` returns the caption as written,
+``layout`` is the conversion above,
 ``colorize`` the colorize LoRA's training caption — the caption through
 ``caption_to_layout``, then one text item per line the OCR reads off the B&W page
 (anima_lora ``project/moss_lora/src/colorize_cache.py``; ``readable`` / ``dedupe``
@@ -228,7 +229,7 @@ def _colorize_layout(caption, lines, size) -> str:
 class MOSSCaptionHelper:
     """An Anima caption as the prompt a MOSS LoRA trained on, per task."""
 
-    TASKS = ("layout", "colorize", *FIXED_CAPTIONS)
+    TASKS = ("default", "layout", "colorize", *FIXED_CAPTIONS)
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -249,8 +250,9 @@ class MOSSCaptionHelper:
                 "task": (
                     cls.TASKS,
                     {
-                        "default": "layout",
+                        "default": "default",
                         "tooltip": (
+                            "default: the caption as written. "
                             "layout: the caption as layout JSON (a caption that "
                             "already is layout JSON passes through). colorize: the "
                             "same, plus a text item per line the OCR reads off "
@@ -275,7 +277,8 @@ class MOSSCaptionHelper:
     FUNCTION = "convert"
     CATEGORY = "MOSS-Image/text"
     DESCRIPTION = (
-        "Anima caption -> the prompt a MOSS LoRA trained on. layout: the layout "
+        "Anima caption -> the prompt a MOSS LoRA trained on. default: the caption "
+        "as written. layout: the layout "
         "JSON the anima_lora MOSS trainer encodes with caption_format=layout_json. colorize: the colorize LoRA's "
         "caption — that layout plus one text item per OCR-read line of the page, "
         "boxed in abs_centralized yxyx on the canvas the i2i nodes generate at "
@@ -284,6 +287,8 @@ class MOSSCaptionHelper:
     )
 
     def convert(self, caption, task, resolution, image=None):
+        if task == "default":
+            return (caption,)
         caption = caption.strip()
         if task == "layout":
             text = to_layout_json(caption)
