@@ -11,9 +11,11 @@ text encoder as the identical string. The output goes into any STRING input
 ``colorize`` the colorize LoRA's training caption — the caption through
 ``caption_to_layout``, then one text item per line the OCR reads off the B&W page
 (anima_lora ``project/moss_lora/src/colorize_cache.py``; ``readable`` / ``dedupe``
-/ ``_colorize_layout`` mirror it). The OCR models load for the read and are freed
-after it. ``sanitize`` and ``decensor`` are those LoRAs' one fixed caption each,
-plain text; the caption input is ignored.
+/ ``_colorize_layout`` mirror it). The OCR models load once, each in a ComfyUI-managed
+patcher that stays until something else needs the card, and the VL reader only for a
+page the detector boxed. ``sanitize`` and
+``decensor`` are those LoRAs' one fixed caption each, plain text; the caption input
+is ignored.
 
 Torch-free but for the colorize OCR. Needs ``anime-tools``; ``__init__`` skips this node when it is not
 installed. The danbooru tag KB (``danbooru_tags_classified.csv``) decides which
@@ -182,33 +184,76 @@ def dedupe(lines) -> list[tuple[str, list]]:
     return keep
 
 
+def _patcher(model, device):
+    """``model`` under a patcher of its own: ComfyUI moves it on and off the card and
+    evicts it like any other model."""
+    import comfy.model_management as mm
+    import comfy.model_patcher
+    import torch
+
+    class OcrModel(torch.nn.ModuleList):
+        pass
+
+    return comfy.model_patcher.ModelPatcher(
+        OcrModel([model]), load_device=device, offload_device=mm.unet_offload_device()
+    )
+
+
+@lru_cache(maxsize=1)
+def _reader(device):
+    """``(patcher, SfxReader)``, loaded on the CPU once per process."""
+    from anime_tools.ocr.sfx import SfxReader
+
+    reader = SfxReader.load(device="cpu")
+    reader.device = str(device)
+    return _patcher(reader.model, device), reader
+
+
+@lru_cache(maxsize=1)
+def _detector(device):
+    """``(patcher, RereadEngine)`` over the AnimeText detector, loaded on the CPU once
+    per process. The engine calls ``read_boxes`` only for a page with boxes, so a page
+    without any never touches the VL reader."""
+    import comfy.model_management as mm
+    from anime_tools.ocr import load_ocr
+    from anime_tools.ocr.animetext import DEFAULT_CONF
+    from anime_tools.ocr.reread import RereadEngine
+
+    def read_boxes(bgr, boxes):
+        patcher, reader = _reader(device)
+        mm.load_models_gpu(
+            [patcher],
+            memory_required=OCR_VRAM_GB * 1024**3 - patcher.model_size(),
+            force_full_load=True,
+        )
+        return reader.read_boxes_scored(bgr, boxes)
+
+    detected = load_ocr(device="cpu")
+    detected.detector.device = str(device)
+    engine = RereadEngine(
+        engine=detected,
+        read_boxes=read_boxes,
+        resized_dir=Path("/"),
+        skip_en=False,
+        min_det=DEFAULT_CONF,
+    )
+    return _patcher(detected.detector.model, device), engine
+
+
 def read_page(page) -> list[tuple[str, list]]:
     """The readable lines of a PIL page, ``(text, [x0, y0, x1, y1])`` in its pixels,
     in reading order: the AnimeText detector, every box read by the manga VL
     reader, ASCII lines kept."""
     import comfy.model_management as mm
-    from anime_tools.ocr import load_ocr
-    from anime_tools.ocr.animetext import DEFAULT_CONF
-    from anime_tools.ocr.reread import RereadEngine
-    from anime_tools.ocr.sfx import SfxReader
 
-    device = mm.get_torch_device()
-    mm.free_memory(OCR_VRAM_GB * 1024**3, device)
-    reader = SfxReader.load(device=str(device))
-    engine = RereadEngine(
-        engine=load_ocr(device=str(device)),
-        read_boxes=reader.read_boxes_scored,
-        resized_dir=Path("/"),
-        skip_en=False,
-        min_det=DEFAULT_CONF,
-    )
+    patcher, engine = _detector(mm.get_torch_device())
+    mm.load_models_gpu([patcher], force_full_load=True)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "page.png"
             page.save(path)
             lines = engine.read(path)
     finally:
-        del engine, reader
         mm.soft_empty_cache()
     return [(ln.text, list(ln.box)) for ln in lines if readable(ln)]
 
