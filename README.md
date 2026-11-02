@@ -52,7 +52,8 @@ encode works with it.
 
 Everything loads through ComfyUI's own loaders and `MOSSImage` model, the same as `Load
 Diffusion Model`: vendor shards (separate q/k/v), Comfy-Org's `moss_image_*` files with
-fused `proj.qkv`, and INT8 files. That model takes its timestep as σ, not 1000·σ, so a
+fused `proj.qkv`, and INT8 files. An INT8 file with separate q/k/v is fused at load, one GEMM
+instead of three, with the same output. That model takes its timestep as σ, not 1000·σ, so a
 saved workflow's `ModelSamplingSD3` samples noise there: remove it (the shift defaults
 to 5) or use `ModelSamplingAuraFlow`. **KSampler (Spectrum for MOSS)** sets this itself
 (Spectrum pack 2.13.1 or later).

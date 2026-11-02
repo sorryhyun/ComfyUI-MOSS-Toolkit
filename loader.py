@@ -206,13 +206,39 @@ def load_hf_dit(root, weight_dtype, disable_dynamic=False):
     return model
 
 
+def fuse_int8_qkv(state):
+    """An INT8 file's ``proj.q`` / ``k`` / ``v`` rows as one ``proj.qkv``, the fused layout
+    ComfyUI detects: one GEMM and one activation quantization instead of three, with the
+    same output. LoRA keys for q / k / v map onto its rows."""
+    heads = [k[: -len("q.comfy_quant")] for k in state if k.endswith(".proj.q.comfy_quant")]
+    for head in heads:
+        for suffix in ("weight", "weight_scale"):
+            rows = [state.pop(f"{head}{p}.{suffix}") for p in "qkv"]
+            state[f"{head}qkv.{suffix}"] = torch.cat(rows)
+        state[f"{head}qkv.comfy_quant"] = state.pop(f"{head}q.comfy_quant")
+        del state[f"{head}k.comfy_quant"], state[f"{head}v.comfy_quant"]
+    return state
+
+
+def load_file_dit(path, options, disable_dynamic=False):
+    """A single DiT file, as ``Load Diffusion Model`` after :func:`fuse_int8_qkv`."""
+    state, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+    model = comfy.sd.load_diffusion_model_state_dict(
+        fuse_int8_qkv(state), model_options=options, metadata=metadata, disable_dynamic=disable_dynamic
+    )
+    if model is None:
+        raise RuntimeError(f"MOSS-Image Loader: no diffusion model in {path}")
+    model.cached_patcher_init = (load_file_dit, (path, options))
+    return model
+
+
 def load_dit(dit, weight_dtype, stream="bf16"):
     dit_roots = _roots("transformer")
     if dit in dit_roots:
         model = load_hf_dit(dit_roots[dit], weight_dtype)
     else:
         path = folder_paths.get_full_path_or_raise("diffusion_models", dit)
-        model = comfy.sd.load_diffusion_model(path, model_options=dit_options(weight_dtype))
+        model = load_file_dit(path, dit_options(weight_dtype))
     logger.info(
         "MOSS-Image Loader: %s runs on ComfyUI's own MOSS-Image model. Set the flow shift "
         "with ModelSamplingAuraFlow, or leave it at 5: ModelSamplingSD3 samples noise here",
