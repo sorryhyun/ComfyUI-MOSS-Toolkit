@@ -11,15 +11,29 @@ rows divide by 3 (else the group becomes three full ``diff`` patches).
 
 ``transformer.`` and bare module paths get the ``diffusion_model.`` prefix, which both
 models' key maps carry; the ``moss-image`` model's map has no bare paths.
+
+``load(..., bypass=True)`` adds the adapters' output in the forward and leaves the base
+weights alone. A weight patch on an INT8 DiT requantizes each patched linear (fresh row
+scales, stochastic rounding), which loses a GPTQ file's weights; bypass keeps them, at
+the price of the eager linear path. ComfyUI's own ``load_bypass_lora_for_models`` drops
+adapters on row slices of a fused ``proj.qkv``, binds its hooks to the modules of the
+patcher it was given (a non-dynamic clone for compile rebuilds the DiT) and, chained,
+overwrites the previous LoRA's injection; ``Deltas`` and ``BypassInjection`` do neither.
 """
 
 import logging
 
 import comfy.lora
 import comfy.lora_convert
+import comfy.patcher_extension
+import comfy.utils
+import comfy.weight_adapter
 import torch
+from comfy.weight_adapter.bypass import BypassForwardHook
 
 logger = logging.getLogger(__name__)
+
+BYPASS_KEY = "moss_toolkit_lora_bypass"
 
 ROOTS = (
     "layers.",
@@ -168,10 +182,106 @@ def to_model_layout(lora, fused):
     return out
 
 
-def load(model, lora, strength, name):
-    """``model`` patched with ``lora`` at ``strength``. Logs every non-block module it
-    patches (``shared_block_modulation``, …) and the adapter modules this model has no
-    weight for; raises when nothing patches."""
+class Deltas:
+    """Every bypass adapter on one linear, in ``BypassForwardHook``'s adapter role:
+    ``(rows, adapter)`` pairs, ``rows`` a slice of the output axis or None for all."""
+
+    def __init__(self, parts=()):
+        self.parts = list(parts)
+        self.device = None
+
+    def _to(self, device):
+        for _, adapter in self.parts:
+            adapter.weights = tuple(
+                w.to(device) if isinstance(w, torch.Tensor) else w
+                for w in adapter.weights
+            )
+        self.device = device
+
+    def h(self, x, base_out):
+        if self.device != x.device:
+            self._to(x.device)
+        out = torch.zeros_like(base_out)
+        for rows, adapter in self.parts:
+            if rows is None:
+                out += adapter.h(x, base_out)
+            else:
+                out[..., rows] += adapter.h(x, base_out[..., rows])
+        return out
+
+    def g(self, y):
+        return y
+
+
+class BypassInjection(comfy.patcher_extension.PatcherInjection):
+    """``deltas`` (``{module path: Deltas}``) on the patcher's own model, resolved at
+    inject."""
+
+    def __init__(self, deltas):
+        super().__init__(self.apply, self.remove)
+        self.deltas = deltas
+
+    def apply(self, patcher):
+        model = patcher.model
+        hooks = [
+            BypassForwardHook(comfy.utils.get_attr(model, path), delta)
+            for path, delta in self.deltas.items()
+        ]
+        for hook in hooks:
+            hook.inject()
+        model.moss_lora_hooks = hooks
+
+    def remove(self, patcher):
+        for hook in patcher.model.__dict__.pop("moss_lora_hooks", ()):
+            hook.eject()
+
+
+def _bypassable(key, patch):
+    """Whether ``patch`` runs as a delta on the linear's output. A key with its own
+    function or a slice off the output axis, and a DoRA LoRA, need the weight."""
+    if not isinstance(patch, comfy.weight_adapter.WeightAdapterBase):
+        return False
+    if isinstance(key, tuple) and (len(key) > 2 or key[1][0] != 0):
+        return False
+    return not (
+        isinstance(patch, comfy.weight_adapter.LoRAAdapter)
+        and patch.weights[4] is not None
+    )
+
+
+def _add_bypass(model, patches, strength):
+    """``patches`` on ``model`` in bypass, on top of an earlier bypass LoRA; returns the
+    patches that went on as weight patches."""
+    injection = model.get_injections(BYPASS_KEY)
+    deltas = (
+        {path: Deltas(delta.parts) for path, delta in injection[0].deltas.items()}
+        if injection
+        else {}
+    )
+    regular = {}
+    for key, patch in patches.items():
+        if not _bypassable(key, patch):
+            regular[key] = patch
+            continue
+        rows = None
+        target = key
+        if isinstance(key, tuple):
+            target, (_, offset, size) = key
+            rows = slice(offset, offset + size)
+        patch.multiplier = strength
+        path = target[: -len(".weight")]
+        deltas.setdefault(path, Deltas()).parts.append((rows, patch))
+    if regular:
+        model.add_patches(regular, strength)
+    model.set_injections(BYPASS_KEY, [BypassInjection(deltas)])
+    return regular
+
+
+def load(model, lora, strength, name, bypass=False):
+    """``model`` with ``lora`` at ``strength``, on its weights or, with ``bypass``, in
+    its forward. Logs every non-block module it patches (``shared_block_modulation``,
+    …) and the adapter modules this model has no weight for; raises when nothing
+    patches."""
     lora = to_model_layout(lora, model_is_fused(model))
     key_map = comfy.lora.model_lora_keys_unet(model.model, {})
     lora = comfy.lora_convert.convert_lora(lora)
@@ -184,7 +294,16 @@ def load(model, lora, strength, name):
             f"model (e.g. {missing[:3]})"
         )
     out = model.clone()
-    out.add_patches(patches, strength)
+    if bypass:
+        regular = _add_bypass(out, patches, strength)
+        if regular:
+            logger.warning(
+                "MOSS LoRA %s: %d patches stay weight patches in bypass",
+                name,
+                len(regular),
+            )
+    else:
+        out.add_patches(patches, strength)
     targets = {k[0] if isinstance(k, tuple) else k for k in patches}
     extra = sorted(
         {
@@ -194,9 +313,10 @@ def load(model, lora, strength, name):
         }
     )
     logger.info(
-        "MOSS LoRA %s: %d weights patched%s",
+        "MOSS LoRA %s: %d weights %s%s",
         name,
         len(targets),
+        "in bypass" if bypass else "patched",
         f", incl. {', '.join(extra)}" if extra else "",
     )
     if missing:

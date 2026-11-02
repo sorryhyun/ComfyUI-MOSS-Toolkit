@@ -7,7 +7,9 @@ Activations on ComfyUI's ``MOSSImage`` follow ``x.dtype`` and non-block ops cast
 weight to it, so no weight changes and any loaded MODEL can be patched, dynamic VRAM and
 INT8 included. ``stream_fp32_core`` adds an ``APPLY_MODEL`` wrapper that hands the
 forward an fp32 latent and casts the block GEMMs' stream input back to the compute
-dtype; their outputs and the attention (``q_norm`` / ``k_norm``, RoPE) stay there.
+dtype; their outputs and the attention (``q_norm`` / ``k_norm``, RoPE) stay there. The
+two text blocks run in fp32 whole, attention included, on SDPA: FlashAttention refuses
+fp32.
 
 An isolated ref's keys and values (``ref_kv``, cached or not) come from
 a stream in the compute dtype, since they join the blocks' attention there. A joint ref,
@@ -19,6 +21,7 @@ import logging
 import comfy.model_management
 import comfy.patcher_extension
 import torch
+from comfy.ldm.modules.attention import attention_pytorch
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +73,23 @@ def apply_model_wrapper(executor, x, t, c_concat=None, *args, **kwargs):
     uncast = [m for m in dit.modules() if getattr(m, "comfy_cast_weights", True) is False]
     for module in uncast:
         module.comfy_cast_weights = True
+    sdpa = []
+    if comfy.model_management.flash_attention_enabled():
+        sdpa = [
+            block.comfy_attention
+            for block in dit.text_embedder.blocks
+            if block.comfy_attention.function is None
+        ]
+    for attention in sdpa:
+        attention.function = attention_pytorch
     dit.forward = forward
     try:
         return executor(x, t, c_concat, *args, **kwargs)
     finally:
         for module in uncast:
             module.comfy_cast_weights = False
+        for attention in sdpa:
+            attention.function = None
         for hook in hooks:
             hook.remove()
         if previous is None:

@@ -177,9 +177,9 @@ def is_ai_toolkit(meta):
     return meta.get("ss_base_model_version") == "moss_image" or '"ai-toolkit"' in meta.get("software", "")
 
 
-def load_lora(model, lora_name, strength, task="auto"):
-    """``(model, meta)``: a MOSS LoRA on ``model`` (either q/k/v layout, see
-    ``lora_compat``), and the reference settings it trained with. anima_lora stamps
+def load_lora(model, lora_name, strength, task="auto", bypass=False):
+    """``(model, meta)``: a MOSS LoRA on ``model`` (either q/k/v layout, on its weights
+    or in bypass, see ``lora_compat``), and the reference settings it trained with. anima_lora stamps
     them; an ai-toolkit edit LoRA trained its refs full size at t = 0, isolated unless
     ``task`` is ``AITK_JOINT``."""
     path = folder_paths.get_full_path_or_raise("loras", lora_name)
@@ -188,7 +188,7 @@ def load_lora(model, lora_name, strength, task="auto"):
     if meta.get("base_model", "MOSS-Image") != "MOSS-Image":
         logger.warning("MOSS i2i: %s was trained on %s", lora_name, meta["base_model"])
     if strength:
-        model = lora_compat.load(model, lora, strength, lora_name)
+        model = lora_compat.load(model, lora, strength, lora_name, bypass)
     if is_ai_toolkit(meta):
         return model, {
             "reference_latents": 1,
@@ -221,6 +221,21 @@ def ref_recipe(meta):
     if isolated:
         return scale, "isolated ref, text-only prompt (CLIP Text Encode, no page)"
     return scale, "joint ref, page through the vision tower (MOSS i2i Text Encode)"
+
+
+def _bypass_input(default):
+    return (
+        "BOOLEAN",
+        {
+            "default": default,
+            "advanced": True,
+            "tooltip": (
+                "Add the LoRA in the forward instead of patching the weights. A patch "
+                "requantizes every patched linear of an INT8 DiT, which loses a GPTQ "
+                "file's weights; bypass keeps them and takes longer per forward."
+            ),
+        },
+    )
 
 
 class MOSSi2iReference:
@@ -289,7 +304,8 @@ class MOSSi2iReference:
                         ),
                     },
                 ),
-            }
+            },
+            "optional": {"bypass": _bypass_input(False)},
         }
 
     RETURN_TYPES = ("MODEL", "LATENT")
@@ -304,14 +320,14 @@ class MOSSi2iReference:
     CATEGORY = "MOSS-Image/i2i"
     DESCRIPTION = "Load a MOSS i2i LoRA and feed the page to MOSS-Image as a VAE reference latent (RoPE r = 1)."
 
-    def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="auto", ref_cache="gpu"):
+    def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="auto", ref_cache="gpu", bypass=False):
         if not _is_moss(model):
             raise ValueError("MOSS i2i Reference needs a MOSS-Image MODEL.")
         meta = None
         if lora_name == "None":
             logger.warning("MOSS i2i: no LoRA; the base never saw a reference")
         else:
-            model, meta = load_lora(model, lora_name, strength, task)
+            model, meta = load_lora(model, lora_name, strength, task, bypass)
             if not meta["reference_latents"]:
                 logger.warning(
                     "MOSS i2i: %s was trained without references; the ref is off its distribution",
@@ -345,12 +361,43 @@ class MOSSi2iReference:
         return (out, {"samples": latent})
 
 
+class MOSSLoRA:
+    """A MOSS LoRA on a MODEL, either q/k/v layout, patched or in bypass."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "lora_name": (folder_paths.get_filename_list("loras"),),
+                "strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
+                "bypass": _bypass_input(True),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+    CATEGORY = "MOSS-Image"
+    DESCRIPTION = "Load a MOSS-Image LoRA. Chains; bypass works on the MOSS-Image Loader's fused q/k/v."
+
+    def patch(self, model, lora_name, strength, bypass=True):
+        if not _is_moss(model):
+            raise ValueError("MOSS-Image LoRA needs a MOSS-Image MODEL.")
+        if not strength:
+            return (model,)
+        path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        lora = comfy.utils.load_torch_file(path, safe_load=True)
+        return (lora_compat.load(model, lora, strength, lora_name, bypass),)
+
+
 NODE_CLASS_MAPPINGS = {
     "MOSSi2iTextEncode": MOSSi2iTextEncode,
     "MOSSi2iReference": MOSSi2iReference,
+    "MOSSLoRA": MOSSLoRA,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MOSSi2iTextEncode": "MOSS i2i Text Encode (page + text)",
     "MOSSi2iReference": "MOSS i2i Reference",
+    "MOSSLoRA": "MOSS-Image LoRA",
 }

@@ -64,6 +64,29 @@ modulation, norms, embedders and head in fp32 around the block GEMMs, as anima_l
 +1.5% time and +0.6 GB. Renders change in detail, and neither precision is consistently
 better. It is the MODEL patch below.
 
+## LoRA on an INT8 DiT
+
+| Node | In → out | Notes |
+|---|---|---|
+| **MOSS-Image LoRA** | MODEL → MODEL | Either q/k/v layout; `bypass` on by default; chains |
+
+ComfyUI applies a LoRA to an INT8 weight by requantizing the whole linear, which loses a GPTQ
+file's weights. `bypass` adds the LoRA in the forward and leaves them alone, including on the
+MOSS-Image Loader's fused `proj.qkv`, where ComfyUI's own `Load LoRA (Bypass)` drops the
+q / k / v adapters. **MOSS i2i Reference** has the same `bypass` (advanced, off by default).
+
+One forward at 4096 + 300 tokens, RTX 5070 Ti, FlashAttention, fp32 stream, a rank 32 LoRA on
+all 252 block linears:
+
+| | Rel. L2 vs bf16 with the same LoRA | Forward |
+|---|---|---|
+| no LoRA | 5.16% | 292–299 ms |
+| patch | 6.64% | 299–314 ms |
+| bypass | 5.23% | 513 ms |
+
+Bypass runs the eager `ffn_down` path, so it renders differently from the patched and the
+LoRA-free model even at a strength near 0.
+
 ## fp32 stream patch
 
 | Node | In → out | Notes |
