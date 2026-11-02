@@ -75,17 +75,20 @@ file's weights. `bypass` adds the LoRA in the forward and leaves them alone, inc
 MOSS-Image Loader's fused `proj.qkv`, where ComfyUI's own `Load LoRA (Bypass)` drops the
 q / k / v adapters. **MOSS i2i Reference** has the same `bypass` (advanced, off by default).
 
-One forward at 4096 + 300 tokens, RTX 5070 Ti, FlashAttention, fp32 stream, a rank 32 LoRA on
-all 252 block linears:
+On a ConvRot INT8 linear, bypass runs the LoRA's `down` matrices as one small INT8 GEMM and only
+`up` in float, so `ffn_down` keeps its fused activation. One forward on real latents (about 4100
+image tokens), RTX 5070 Ti, FlashAttention, fp32 stream, a rank 32 LoRA on all 252 block linears,
+at σ 0.2 / 0.5 / 0.9:
 
 | | Rel. L2 vs bf16 with the same LoRA | Forward |
 |---|---|---|
-| no LoRA | 5.16% | 292–299 ms |
-| patch | 6.64% | 299–314 ms |
-| bypass | 5.23% | 513 ms |
+| no LoRA | – | 282 ms |
+| patch | 1.15 / 1.74 / 3.17% | 282 ms |
+| bypass | 0.85 / 1.31 / 2.18% | 359 ms |
 
-Bypass runs the eager `ffn_down` path, so it renders differently from the patched and the
-LoRA-free model even at a strength near 0.
+bf16 linears and LoKr / LoHa keep ComfyUI's float bypass hook. On an INT8 DiT that path takes the
+eager `ffn_down` path as well (486 ms with the LoRA above). Any change to a forward re-rolls its
+bf16 rounding, so two bypass setups that should match can differ by about 1.5% in the prediction.
 
 ## fp32 stream patch
 

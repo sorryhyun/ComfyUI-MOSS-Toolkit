@@ -14,18 +14,27 @@ models' key maps carry; the ``moss-image`` model's map has no bare paths.
 
 ``load(..., bypass=True)`` adds the adapters' output in the forward and leaves the base
 weights alone. A weight patch on an INT8 DiT requantizes each patched linear (fresh row
-scales, stochastic rounding), which loses a GPTQ file's weights; bypass keeps them, at
-the price of the eager linear path. ComfyUI's own ``load_bypass_lora_for_models`` drops
-adapters on row slices of a fused ``proj.qkv``, binds its hooks to the modules of the
-patcher it was given (a non-dynamic clone for compile rebuilds the DiT) and, chained,
-overwrites the previous LoRA's injection; ``Deltas`` and ``BypassInjection`` do neither.
+scales, stochastic rounding), which loses a GPTQ file's weights; bypass keeps them.
+ComfyUI's own ``load_bypass_lora_for_models`` drops adapters on row slices of a fused
+``proj.qkv``, binds its hooks to the modules of the patcher it was given (a non-dynamic
+clone for compile rebuilds the DiT) and, chained, overwrites the previous LoRA's
+injection; ``Deltas`` and ``BypassInjection`` do neither.
+
+On a ConvRot INT8 linear, ``DownRows`` runs the ``down`` matrices as one small INT8 GEMM
+in the weight's layout and only ``up`` in float. ``BypassForwardHook`` would set
+``comfy_force_forward``, which drops ``ffn_down``'s situ fold; ``linear_input_act`` below
+keeps it. Any other linear (bf16, LoKr, LoHa) takes the hook.
 """
 
+import functools
+import inspect
 import logging
 
 import comfy.lora
 import comfy.lora_convert
+import comfy.ops
 import comfy.patcher_extension
+import comfy.quant_ops
 import comfy.utils
 import comfy.weight_adapter
 import torch
@@ -213,6 +222,122 @@ class Deltas:
         return y
 
 
+class DownRows:
+    """Every LoRA on one linear as an INT8 GEMM of their ``down`` rows, with the strength
+    folded into ``up``. Built on the first forward after inject, dropped at eject."""
+
+    def __init__(self, module, parts):
+        self.module = module
+        self.parts = parts
+        self.original_forward = None
+        self.device = None
+        self.down = None
+        self.ups = []
+        self.in_act = False
+
+    @staticmethod
+    def fits(module, parts):
+        weight = module.weight
+        return (
+            isinstance(weight, comfy.quant_ops.QuantizedTensor)
+            and getattr(weight.params, "convrot", False)
+            and not weight.params.transposed
+            and all(
+                isinstance(adapter, comfy.weight_adapter.LoRAAdapter)
+                and adapter.weights[3] is None
+                and adapter.weights[5] is None
+                for _, adapter in parts
+            )
+        )
+
+    def _build(self, device):
+        dtype = self.module.weight.params.orig_dtype
+        downs, self.ups = [], []
+        at = 0
+        for rows, adapter in self.parts:
+            up, down, alpha = adapter.weights[:3]
+            rank = down.shape[0]
+            scale = adapter.multiplier * (
+                float(alpha) / rank if alpha is not None else 1.0
+            )
+            downs.append(down.to(device).float())
+            self.ups.append((rows, at, at + rank, up.to(device, dtype) * scale))
+            at += rank
+        self.down = self.module.weight.requantize_from_float(
+            torch.cat(downs), scale="recalculate", stochastic_rounding=0
+        )
+        self.device = device
+
+    def add(self, x, out, input_act=None, act_weight=None, act_eps=0.0):
+        if self.device != x.device:
+            self._build(x.device)
+        if input_act is None:
+            latent = torch.nn.functional.linear(x, self.down)
+        else:
+            latent = self.down.linear_input_act(
+                x,
+                None,
+                input_act=input_act,
+                input_act_weight=act_weight,
+                input_act_eps=act_eps,
+            )
+        latent = latent.to(out.dtype)
+        for rows, start, stop, up in self.ups:
+            delta = torch.nn.functional.linear(latent[..., start:stop], up)
+            if rows is None:
+                out += delta
+            else:
+                out[..., rows] += delta
+        return out
+
+    def forward(self, x, *args, **kwargs):
+        out = self.original_forward(x, *args, **kwargs)
+        return out if self.in_act else self.add(x, out)
+
+    def inject(self):
+        self.original_forward = self.module.forward
+        self.module.forward = self.forward
+        self.module.moss_lora_rows = self
+
+    def eject(self):
+        self.module.forward = self.original_forward
+        self.original_forward = None
+        del self.module.moss_lora_rows
+        self.device = self.down = None
+        self.ups = []
+
+
+_linear_input_act = inspect.unwrap(comfy.ops.linear_input_act)
+
+
+@functools.wraps(_linear_input_act)
+def linear_input_act(
+    linear,
+    x,
+    input_act,
+    act_weight=None,
+    act_eps=0.0,
+    residual=None,
+    residual_scale=None,
+):
+    rows = getattr(linear, "moss_lora_rows", None)
+    if rows is None:
+        return _linear_input_act(
+            linear, x, input_act, act_weight, act_eps, residual, residual_scale
+        )
+    rows.in_act = True
+    try:
+        out = _linear_input_act(
+            linear, x, input_act, act_weight, act_eps, residual, residual_scale
+        )
+    finally:
+        rows.in_act = False
+    return rows.add(x, out, input_act, act_weight, act_eps)
+
+
+comfy.ops.linear_input_act = linear_input_act
+
+
 class BypassInjection(comfy.patcher_extension.PatcherInjection):
     """``deltas`` (``{module path: Deltas}``) on the patcher's own model, resolved at
     inject."""
@@ -223,10 +348,15 @@ class BypassInjection(comfy.patcher_extension.PatcherInjection):
 
     def apply(self, patcher):
         model = patcher.model
-        hooks = [
-            BypassForwardHook(comfy.utils.get_attr(model, path), delta)
-            for path, delta in self.deltas.items()
-        ]
+        hooks = []
+        for path, delta in self.deltas.items():
+            module = comfy.utils.get_attr(model, path)
+            fits = DownRows.fits(module, delta.parts)
+            hooks.append(
+                DownRows(module, delta.parts)
+                if fits
+                else BypassForwardHook(module, delta)
+            )
         for hook in hooks:
             hook.inject()
         model.moss_lora_hooks = hooks
