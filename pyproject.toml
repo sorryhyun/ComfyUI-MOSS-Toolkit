@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-moss-toolkit"
 description = "MOSS-Image toolkit: a one-node DiT + text encoder (bf16, INT8 W8A8 or fp8) + VAE loader that takes the INT8 DiT files, an fp32 residual stream MODEL patch for bf16 or INT8 block GEMMs, image-to-image (a text encode that puts the page through Qwen3.5's vision tower, and a MODEL patch that loads the i2i LoRA and feeds the page as a clean VAE reference latent on RoPE's reserved r axis, isolated for colorize v3), an Anima caption -> MOSS layout-JSON prompt node, and a caption helper with the prompt each i2i LoRA trained on (colorize with the page's OCR lines, sanitize's fixed caption). The Reference node loads fused (proj.qkv) or separate q/k/v LoRAs, ai-toolkit edit LoRAs included, and also runs on ComfyUI's own MOSS-Image model. Works under KSampler and the MOSS Spectrum KSampler."
-version = "0.12.0"
+version = "0.11.0"
 license = { file = "LICENSE" }
 # torch / numpy / pillow ship with any ComfyUI install; listed for a bare `pip install .`.
 dependencies = [
