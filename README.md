@@ -147,9 +147,10 @@ An isolated ref with its own timestep depends only on the page: not on
 the step, the prompt or the CFG branch. With `ref_cache = gpu` (default) the first
 forward runs it through the 42 blocks once and keeps each block's ref keys and
 values (~2.1 GB bf16 at 1 MP). After that, each forward runs only the image and text
-rows, so the full-size ref costs about as much as extra keys. The cache lasts until
-the model's weight patches or the target size change, so a reseed of the same page
-reuses it. `cpu` keeps it in pinned host memory and copies one block's K/V in at a
+rows, so the full-size ref costs about as much as extra keys. The cache is rebuilt
+once per prompt (and when the model's weight patches or the target size change). A
+K/V kept from the previous prompt broke ComfyUI's dynamic-VRAM allocation graph in
+every block on a reseed (sampling 17 → 25 s), and the rebuild costs about a second. `cpu` keeps it in pinned host memory and copies one block's K/V in at a
 time (for low VRAM); `off` runs the ref rows in every forward. v1 / v2 LoRAs
 (joint ref) always run the ref rows.
 
@@ -226,7 +227,7 @@ MOSS-Image Edit** builds (leave its VAE unconnected so it adds no second referen
 On ComfyUI's own MOSS-Image model (Load Diffusion Model on the Comfy-Org repack or the
 vendor shards) the node does not run its copy of the forward; it passes the ref to the
 model's built-in reference path. An isolated ref at t = 0 goes in as `ref_kv`, built
-once per weight patch set (`ref_cache` gpu / cpu; off: recomputed each forward). A
+once per prompt and weight patch set (`ref_cache` gpu / cpu; off: recomputed each forward). A
 joint ref goes in as `index_timestep_zero`, a shared-timestep one as `index`. The
 outputs match the `moss-image` path for a full-size ref (colorize v3, sanitize,
 swap_text, ai-toolkit). That model puts a ref on its own grid, not stretched onto the

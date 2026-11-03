@@ -37,6 +37,12 @@ import sys
 
 import torch
 
+try:
+    from comfy_execution.utils import get_executing_context
+except ImportError:
+    def get_executing_context():
+        return None
+
 logger = logging.getLogger(__name__)
 
 
@@ -476,8 +482,10 @@ def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cach
     """``APPLY_MODEL`` wrapper: for the length of one ``_apply_model`` call, the live
     ``diffusion_model`` runs ``forward_with_ref``. Spectrum's cached steps never
     reach ``apply_model``, so they cost no ref rows. ``ref_cache`` (``gpu`` / ``cpu``
-    / ``off``): where an isolated ref's ``RefKV`` lives; it outlasts the run, so a
-    reseed of the same page reuses it.
+    / ``off``): where an isolated ref's ``RefKV`` lives. It is rebuilt once per
+    prompt (the key carries the executing prompt id): a K/V kept from the previous
+    prompt broke ComfyUI's dynamic-VRAM allocation graph in every block on a reseed
+    (44 graph breaks, 588 rogues, sampling 17 → 25 s), and the rebuild costs ~1 s.
 
     The wrapper holds the ref tensor and its cache only (no patcher, no module), and
     resolves the module from ``executor.class_obj`` each call, so a reloaded model
@@ -488,7 +496,12 @@ def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cach
 
     def wrapper(executor, *args, **kwargs):
         dit = executor.class_obj.diffusion_model
-        model_key = (id(dit), getattr(executor.class_obj, "current_weight_patches_uuid", None))
+        context = get_executing_context()
+        model_key = (
+            id(dit),
+            getattr(executor.class_obj, "current_weight_patches_uuid", None),
+            None if context is None else context.prompt_id,
+        )
         x = args[0]
         if hasattr(dit, "preprocess_refs"):
             options = args[5] if len(args) > 5 else kwargs.get("transformer_options", {})

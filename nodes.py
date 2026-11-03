@@ -297,7 +297,7 @@ class MOSSi2iReference:
                         "default": "gpu",
                         "tooltip": (
                             "An isolated ref depends on the page alone: "
-                            "run it through the blocks once and keep its keys / values "
+                            "run it through the blocks once per prompt and keep its keys / values "
                             "(~2.1 GB bf16 at 1 MP), so each forward runs the image and "
                             "text rows only. cpu: kept in host memory, copied in per "
                             "forward. off: the ref rows in every forward."
