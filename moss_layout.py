@@ -15,7 +15,13 @@ text encoder as the identical string. The output goes into any STRING input
 patcher that stays until something else needs the card, and the VL reader only for a
 page the detector boxed. ``sanitize`` and
 ``decensor`` are those LoRAs' one fixed caption each, plain text; the caption input
-is ignored.
+is ignored. ``swap_text`` is the caption as written (the page's layout JSON) and
+encodes Hangul with the syllable split the swap_text LoRA trained on
+(:mod:`.token_split`); the split is in the tokenizer, so only the ``conditioning``
+output (with ``clip`` connected) carries it.
+
+With ``clip`` connected, the ``conditioning`` output is the prompt encoded as a plain
+CLIP Text Encode would, so the helper can feed the sampler directly.
 
 ``put_endthink`` returns the whole chat turn with the ``sure`` assistant tail
 (``<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n`` +
@@ -52,6 +58,7 @@ from anime_tools.captions.layout_json import (
 from anime_tools.downloads import by_id
 
 from .nodes import RESOLUTION, target_size, to_pil
+from .token_split import has_hangul, split_clip
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +304,7 @@ def with_endthink(prompt: str) -> str:
 class MOSSCaptionHelper:
     """An Anima caption as the prompt a MOSS LoRA trained on, per task."""
 
-    TASKS = ("default", "layout", "colorize", *FIXED_CAPTIONS)
+    TASKS = ("default", "layout", "colorize", *FIXED_CAPTIONS, "swap_text")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -326,7 +333,10 @@ class MOSSCaptionHelper:
                             "same, plus a text item per line the OCR reads off "
                             "the page, boxed on the target canvas. sanitize / "
                             "decensor: that LoRA's fixed caption, plain text; "
-                            "the caption is ignored."
+                            "the caption is ignored. swap_text: the caption as "
+                            "written (the page's layout JSON), Korean encoded "
+                            "syllable by syllable as the swap_text LoRA trained; "
+                            "connect clip and use the conditioning output."
                         ),
                     },
                 ),
@@ -336,6 +346,16 @@ class MOSSCaptionHelper:
                 "image": (
                     "IMAGE",
                     {"tooltip": "The B&W page (colorize). The OCR reads it."},
+                ),
+                "clip": (
+                    "CLIP",
+                    {
+                        "tooltip": (
+                            "MOSS-Image text encoder. Connected, the conditioning "
+                            "output is the prompt encoded (swap_text: with the "
+                            "Hangul syllable split)."
+                        )
+                    },
                 ),
                 "put_endthink": (
                     "BOOLEAN",
@@ -355,8 +375,8 @@ class MOSSCaptionHelper:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("prompt",)
+    RETURN_TYPES = ("STRING", "CONDITIONING")
+    RETURN_NAMES = ("prompt", "conditioning")
     FUNCTION = "convert"
     CATEGORY = "MOSS-Image/text"
     DESCRIPTION = (
@@ -366,19 +386,40 @@ class MOSSCaptionHelper:
         "caption — that layout plus one text item per OCR-read line of the page, "
         "boxed in abs_centralized yxyx on the canvas the i2i nodes generate at "
         "(same resolution). Feed it to MOSS i2i Text Encode. sanitize / decensor: "
-        "that LoRA's fixed caption, verbatim, for a plain CLIP Text Encode."
+        "that LoRA's fixed caption, verbatim, for a plain CLIP Text Encode. "
+        "swap_text: the page's layout JSON with Korean split by syllable at "
+        "encode time; take the conditioning output. With clip connected, "
+        "conditioning is the prompt encoded."
     )
 
-    def convert(self, caption, task, resolution, image=None, put_endthink=False):
+    def convert(
+        self, caption, task, resolution, image=None, put_endthink=False, clip=None
+    ):
         text = self._prompt(caption, task, resolution, image)
         if put_endthink:
+            if task == "swap_text":
+                logger.warning(
+                    "MOSS Caption Helper: swap_text was cached with prompt_tail off; "
+                    "put_endthink adds a tail it never saw"
+                )
             text = with_endthink(text)
         logger.info("MOSSCaptionHelper (%s): %s", task, text)
-        return (text,)
+        split = task == "swap_text" and has_hangul(text)
+        if clip is None:
+            if split:
+                logger.warning(
+                    "MOSS Caption Helper: swap_text without clip; the prompt string "
+                    "encodes Korean without the syllable split"
+                )
+            return (text, None)
+        encoder = split_clip(clip) if split else clip
+        return (text, encoder.encode_from_tokens_scheduled(encoder.tokenize(text)))
 
     def _prompt(self, caption, task, resolution, image):
         if task == "default":
             return caption
+        if task == "swap_text":
+            return caption.strip()
         caption = caption.strip()
         if task == "layout":
             text = to_layout_json(caption)
