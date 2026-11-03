@@ -17,6 +17,12 @@ page the detector boxed. ``sanitize`` and
 ``decensor`` are those LoRAs' one fixed caption each, plain text; the caption input
 is ignored.
 
+``put_endthink`` returns the whole chat turn with the ``sure`` assistant tail
+(``<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n`` +
+``\n</think>\n\nSure,``), as anima_lora's ``prompt_tail = sure`` encodes it. ComfyUI's
+MOSS tokenizer skips its own template for text starting with ``<|im_start|>``, so the
+tail lands after the generation prompt, not inside the user turn.
+
 Torch-free but for the colorize OCR. Needs ``anime-tools``; ``__init__`` skips this node when it is not
 installed. The danbooru tag KB (``danbooru_tags_classified.csv``) decides which
 tags are characters / series / meta; it is looked up under ``HOME/models`` and
@@ -259,7 +265,11 @@ def read_page(page) -> list[tuple[str, list]]:
 
 
 def _colorize_layout(caption, lines, size) -> str:
-    layout = json.loads(caption) if is_layout_json(caption) else caption_to_layout(caption, _kb())
+    layout = (
+        json.loads(caption)
+        if is_layout_json(caption)
+        else caption_to_layout(caption, _kb())
+    )
     items = [
         {"label": "text", "caption": "text", "text": t, "bbox": centered_box(b, size)}
         for t, b in lines
@@ -269,6 +279,19 @@ def _colorize_layout(caption, lines, size) -> str:
         layout["bbox_coord_space"] = "abs_centralized"
         layout["bbox_format"] = "yxyx"
     return json.dumps(layout, ensure_ascii=False, separators=(",", ":"))
+
+
+TURN = "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n"
+ENDTHINK = "\n</think>\n\nSure,"
+
+
+def with_endthink(prompt: str) -> str:
+    if prompt.startswith("<|im_start|>"):
+        logger.warning(
+            "MOSS Caption Helper: the prompt is already a chat turn; put_endthink leaves it as typed"
+        )
+        return prompt
+    return TURN.format(prompt.strip()) + ENDTHINK
 
 
 class MOSSCaptionHelper:
@@ -314,6 +337,21 @@ class MOSSCaptionHelper:
                     "IMAGE",
                     {"tooltip": "The B&W page (colorize). The OCR reads it."},
                 ),
+                "put_endthink": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "Output the whole chat turn ending in "
+                            "'\\n</think>\\n\\nSure,' after the generation prompt "
+                            "(anima_lora prompt_tail = sure: the cache default, "
+                            "sharper hands and backgrounds on Base). For a plain "
+                            "CLIP Text Encode, and for a LoRA cached with "
+                            "prompt_tail sure; leave off for MOSS i2i Text "
+                            "Encode and LoRAs cached with prompt_tail off."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -331,30 +369,45 @@ class MOSSCaptionHelper:
         "that LoRA's fixed caption, verbatim, for a plain CLIP Text Encode."
     )
 
-    def convert(self, caption, task, resolution, image=None):
+    def convert(self, caption, task, resolution, image=None, put_endthink=False):
+        text = self._prompt(caption, task, resolution, image)
+        if put_endthink:
+            text = with_endthink(text)
+        logger.info("MOSSCaptionHelper (%s): %s", task, text)
+        return (text,)
+
+    def _prompt(self, caption, task, resolution, image):
         if task == "default":
-            return (caption,)
+            return caption
         caption = caption.strip()
         if task == "layout":
             text = to_layout_json(caption)
         elif task in FIXED_CAPTIONS:
             text = FIXED_CAPTIONS[task]
             if caption and caption != text:
-                logger.warning("MOSS Caption Helper: %s ignores the caption %r", task, caption)
+                logger.warning(
+                    "MOSS Caption Helper: %s ignores the caption %r", task, caption
+                )
         else:
             if image is None:
                 raise ValueError("MOSS Caption Helper: colorize needs the page image")
             page = to_pil(image)
             w, h = target_size(page.width, page.height, resolution)
             lines = [
-                (t, [b[0] * w / page.width, b[1] * h / page.height,
-                     b[2] * w / page.width, b[3] * h / page.height])
+                (
+                    t,
+                    [
+                        b[0] * w / page.width,
+                        b[1] * h / page.height,
+                        b[2] * w / page.width,
+                        b[3] * h / page.height,
+                    ],
+                )
                 for t, b in dedupe(read_page(page))
             ]
             logger.info("MOSSCaptionHelper: %d OCR lines", len(lines))
             text = _colorize_layout(caption, lines, (w, h))
-        logger.info("MOSSCaptionHelper (%s): %s", task, text)
-        return (text,)
+        return text
 
 
 NODE_CLASS_MAPPINGS = {
