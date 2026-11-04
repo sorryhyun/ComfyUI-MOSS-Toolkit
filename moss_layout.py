@@ -8,10 +8,15 @@ text encoder as the identical string. The output goes into any STRING input
 
 ``MOSSCaptionHelper`` adds a task switch: ``default`` returns the caption as written,
 ``layout`` is the conversion above,
-``colorize`` the colorize LoRA's training caption — the caption through
+``colorize`` the colorize v4 LoRA's training caption — the caption through
 ``caption_to_layout``, then one text item per line the OCR reads off the B&W page
-(anima_lora ``project/moss_lora/src/colorize_cache.py``; ``readable`` / ``dedupe``
-/ ``_colorize_layout`` mirror it). The OCR models load once, each in a ComfyUI-managed
+(anima_lora ``library/moss/colorize.py`` ``captions = "ocr"``; ``dedupe`` /
+``_colorize_layout`` mirror it). ``colorize_v5`` is the v5 caption (``captions =
+"control"``), no OCR text: a caption with a comic tag is a manga page, ``comic`` plus
+the ``character`` items of a layout-JSON caption plus a box-only text item per line
+``anime_tools.ocr.floors.keep_line`` keeps (the page connected); any other caption is
+an illustration, its series (the tag KB's copyright tags) and colour tags as layout
+JSON (``anime_tools.captions.color_tags``). The OCR models load once, each in a ComfyUI-managed
 patcher that stays until something else needs the card, and the VL reader only for a
 page the detector boxed. ``sanitize`` and
 ``decensor`` are those LoRAs' one fixed caption each, plain text; the caption input
@@ -161,11 +166,8 @@ class AnimaCaptionToMossLayout:
         return (text,)
 
 
-# colorize_cache.py's OCR floors: a box under LINE_MIN_DET is kept when the read
-# scores LOW_DET_SCORE (the detector scores horizontal English balloons 0.3-0.55),
-# and an all-ASCII line's glyph floor is LATIN_MIN_GLYPH.
-LOW_DET_SCORE = 0.9
-LATIN_MIN_GLYPH = 12.0
+# The OCR floors are anime_tools.ocr.floors (readable, keep_line), the ones the
+# colorize and swap_text LoRAs trained on.
 OCR_VRAM_GB = 6
 # Per task, the anima_lora cache.toml ``fixed_caption`` its LoRA trained on
 # (caption_format fixed: every pair encoded this string verbatim) — change both
@@ -174,16 +176,6 @@ FIXED_CAPTIONS = {
     "sanitize": "no sfx, no dialogue, no watermark",
     "decensor": "no bar censor, no mosaic censor, uncensored",
 }
-
-
-def readable(ln) -> bool:
-    from anime_tools.captions.ocr_sidecar import DEFAULT_MIN_GLYPH
-    from anime_tools.ocr.reread import LINE_MIN_DET
-
-    latin = all(ch.isascii() for ch in ln.text if ch.isalpha())
-    floor = LATIN_MIN_GLYPH if latin else DEFAULT_MIN_GLYPH
-    sure = ln.det >= LINE_MIN_DET or ln.score >= LOW_DET_SCORE
-    return bool(ln.text) and sure and ln.glyph_px >= floor
 
 
 def dedupe(lines) -> list[tuple[str, list]]:
@@ -253,11 +245,12 @@ def _detector(device):
     return _patcher(detected.detector.model, device), engine
 
 
-def read_page(page) -> list[tuple[str, list]]:
-    """The readable lines of a PIL page, ``(text, [x0, y0, x1, y1])`` in its pixels,
-    in reading order: the AnimeText detector, every box read by the manga VL
-    reader, ASCII lines kept."""
+def read_page(page, keep="readable") -> list[tuple[str, list]]:
+    """The lines of a PIL page ``anime_tools.ocr.floors.<keep>`` keeps,
+    ``(text, [x0, y0, x1, y1])`` in its pixels, in reading order: the AnimeText
+    detector, every box read by the manga VL reader."""
     import comfy.model_management as mm
+    from anime_tools.ocr import floors
 
     patcher, engine = _detector(mm.get_torch_device())
     mm.load_models_gpu([patcher], force_full_load=True)
@@ -268,7 +261,14 @@ def read_page(page) -> list[tuple[str, list]]:
             lines = engine.read(path)
     finally:
         mm.soft_empty_cache()
-    return [(ln.text, list(ln.box)) for ln in lines if readable(ln)]
+    keeps = getattr(floors, keep)
+    return [(ln.text, list(ln.box)) for ln in lines if keeps(ln)]
+
+
+def _scaled(box, src, dst) -> list[float]:
+    """A ``[x0, y0, x1, y1]`` box on a ``src = (W, H)`` page on the ``dst`` canvas."""
+    (sw, sh), (dw, dh) = src, dst
+    return [box[0] * dw / sw, box[1] * dh / sh, box[2] * dw / sw, box[3] * dh / sh]
 
 
 def _colorize_layout(caption, lines, size) -> str:
@@ -288,6 +288,68 @@ def _colorize_layout(caption, lines, size) -> str:
     return json.dumps(layout, ensure_ascii=False, separators=(",", ":"))
 
 
+def _is_comic(caption: str) -> bool:
+    from anime_tools.captions.color_tags import is_comic_tag
+
+    if is_layout_json(caption):
+        summary = json.loads(caption).get("summary", {}).get("caption", "")
+        return any(is_comic_tag(t) for t in summary.split(","))
+    return any(is_comic_tag(t) for t in caption.split(","))
+
+
+def _illustration_caption(caption: str) -> str:
+    """The caption's series + colour tags as layout JSON, as the colorize v5 cache
+    built an illustration's draw (series: the tag KB's copyright tags)."""
+    from anime_tools.captions.color_tags import (
+        _NON_SERIES_COPYRIGHT,
+        filter_to_colors_and_protected,
+    )
+    from anime_tools.captions.correction import tag_kind
+
+    if is_layout_json(caption):
+        return caption
+    kb = _kb()
+    tags = [t.strip() for t in caption.split(",") if t.strip()]
+    series = frozenset(
+        t.lower()
+        for t in tags
+        if tag_kind(t, kb) == "copyright" and t.lower() not in _NON_SERIES_COPYRIGHT
+    )
+    kept = filter_to_colors_and_protected(caption, series, keep_copyright=True)
+    dropped = [
+        t for t in tags if t.lower() not in {k.strip().lower() for k in kept.split(",")}
+    ]
+    if dropped:
+        logger.info(
+            "MOSS Caption Helper colorize_v5: drops %s (not series or colour)", dropped
+        )
+    return layout_json(kept, kb) if kept else ""
+
+
+def _manga_v5_layout(caption: str, boxes: list, size) -> str:
+    """``comic``, the caption's ``character`` items (a layout-JSON caption), then a
+    box-only ``text`` item per OCR line: the colorize v5 cache's manga draw."""
+    items = []
+    if is_layout_json(caption):
+        items = [
+            it
+            for it in json.loads(caption).get("items", [])
+            if it.get("label") != "text"
+        ]
+    elif [t for t in caption.split(",") if t.strip() and t.strip().lower() != "comic"]:
+        logger.warning(
+            "MOSS Caption Helper colorize_v5: a manga page's caption is comic alone; "
+            "give character colours as character items in layout JSON"
+        )
+    items += [{"label": "text", "bbox": centered_box(b, size)} for b in boxes]
+    layout: dict = {"summary": {"caption": "comic"}}
+    if items:
+        layout.update(
+            items=items, bbox_coord_space="abs_centralized", bbox_format="yxyx"
+        )
+    return json.dumps(layout, ensure_ascii=False, separators=(",", ":"))
+
+
 TURN = "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n"
 ENDTHINK = "\n</think>\n\nSure,"
 
@@ -304,7 +366,14 @@ def with_endthink(prompt: str) -> str:
 class MOSSCaptionHelper:
     """An Anima caption as the prompt a MOSS LoRA trained on, per task."""
 
-    TASKS = ("default", "layout", "colorize", *FIXED_CAPTIONS, "swap_text")
+    TASKS = (
+        "default",
+        "layout",
+        "colorize",
+        "colorize_v5",
+        *FIXED_CAPTIONS,
+        "swap_text",
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -316,9 +385,12 @@ class MOSSCaptionHelper:
                         "multiline": True,
                         "default": "",
                         "tooltip": (
-                            "Anima-format caption. For colorize, the colour tags "
+                            "Anima-format caption. colorize: the colour tags "
                             "the LoRA trained on: copyright, 'comic' for a manga "
-                            "page, hair / eye / clothing colours."
+                            "page, hair / eye / clothing colours. colorize_v5: "
+                            "'comic' for a manga page (character colours as "
+                            "layout-JSON character items), series + colour tags "
+                            "for an illustration."
                         ),
                     },
                 ),
@@ -331,7 +403,10 @@ class MOSSCaptionHelper:
                             "layout: the caption as layout JSON (a caption that "
                             "already is layout JSON passes through). colorize: the "
                             "same, plus a text item per line the OCR reads off "
-                            "the page, boxed on the target canvas. sanitize / "
+                            "the page, boxed on the target canvas (v4 LoRA). "
+                            "colorize_v5: comic + a box-only text item per OCR "
+                            "line (no text), or an illustration's series + colour "
+                            "tags (v5 LoRA). sanitize / "
                             "decensor: that LoRA's fixed caption, plain text; "
                             "the caption is ignored. swap_text: the caption as "
                             "written (the page's layout JSON), Korean encoded "
@@ -345,7 +420,12 @@ class MOSSCaptionHelper:
             "optional": {
                 "image": (
                     "IMAGE",
-                    {"tooltip": "The B&W page (colorize). The OCR reads it."},
+                    {
+                        "tooltip": (
+                            "The B&W page (colorize, colorize_v5 on a manga page). "
+                            "The OCR reads it."
+                        )
+                    },
                 ),
                 "clip": (
                     "CLIP",
@@ -385,7 +465,9 @@ class MOSSCaptionHelper:
         "JSON the anima_lora MOSS trainer encodes with caption_format=layout_json. colorize: the colorize LoRA's "
         "caption — that layout plus one text item per OCR-read line of the page, "
         "boxed in abs_centralized yxyx on the canvas the i2i nodes generate at "
-        "(same resolution). Feed it to MOSS i2i Text Encode. sanitize / decensor: "
+        "(same resolution). Feed it to MOSS i2i Text Encode. colorize_v5: the v5 "
+        "LoRA's caption, comic + box-only text items for a manga page, series + "
+        "colour tags for an illustration. sanitize / decensor: "
         "that LoRA's fixed caption, verbatim, for a plain CLIP Text Encode. "
         "swap_text: the page's layout JSON with Korean split by syllable at "
         "encode time; take the conditioning output. With clip connected, "
@@ -429,22 +511,28 @@ class MOSSCaptionHelper:
                 logger.warning(
                     "MOSS Caption Helper: %s ignores the caption %r", task, caption
                 )
+        elif task == "colorize_v5":
+            if not _is_comic(caption):
+                return _illustration_caption(caption)
+            boxes = []
+            if image is not None:
+                page = to_pil(image)
+                w, h = target_size(page.width, page.height, resolution)
+                boxes = [
+                    _scaled(b, page.size, (w, h))
+                    for _, b in read_page(page, keep="keep_line")
+                ]
+                logger.info("MOSSCaptionHelper: %d text boxes", len(boxes))
+            else:
+                w = h = 0
+            text = _manga_v5_layout(caption, boxes, (w, h))
         else:
             if image is None:
                 raise ValueError("MOSS Caption Helper: colorize needs the page image")
             page = to_pil(image)
             w, h = target_size(page.width, page.height, resolution)
             lines = [
-                (
-                    t,
-                    [
-                        b[0] * w / page.width,
-                        b[1] * h / page.height,
-                        b[2] * w / page.width,
-                        b[3] * h / page.height,
-                    ],
-                )
-                for t, b in dedupe(read_page(page))
+                (t, _scaled(b, page.size, (w, h))) for t, b in dedupe(read_page(page))
             ]
             logger.info("MOSSCaptionHelper: %d OCR lines", len(lines))
             text = _colorize_layout(caption, lines, (w, h))
