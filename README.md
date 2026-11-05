@@ -2,7 +2,8 @@
 
 Nodes for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image), on ComfyUI's own
 MOSS-Image support (formerly **MOSS i2i**, `comfyui-moss-i2i`). The `moss-image` node is
-not required:
+not required. i2i needs ComfyUI 0.43.0 or later, the first release whose MOSS-Image
+model takes a reference latent:
 
 - **Loader** — DiT, Qwen3.5 text encoder and VAE in one node, each from its own
   source; the DiT and the TE can be INT8 files.
@@ -243,6 +244,8 @@ swap_text, ai-toolkit). That model puts a ref on its own grid, not stretched ont
 target, so a half-size ref (colorize v1 / v2) stops with an error there and needs
 the `moss-image` node's model: install that node and load with its **MOSS-Image HF
 Loader**, then use `ModelSamplingSD3` as before.
+On ComfyUI before 0.43.0 that model has no reference input, and the Reference node
+stops with an error that says so.
 
 ### Compatibility
 

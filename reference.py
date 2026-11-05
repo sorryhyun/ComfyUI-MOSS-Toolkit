@@ -65,6 +65,21 @@ def ref_rope(dit, height, width, ref_hw, text_length, device):
     return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2).unsqueeze(0)
 
 
+def is_core_moss(dit):
+    """ComfyUI's own ``MOSSImage`` (any release), as opposed to the ``moss-image`` node's DiT."""
+    try:
+        from comfy.ldm.moss_image.model import MOSSImage
+    except ImportError:
+        return False
+    return isinstance(dit, MOSSImage)
+
+
+CORE_NO_REFS = (
+    "ComfyUI's MOSS-Image model takes a reference latent from ComfyUI 0.43.0 on; update "
+    "ComfyUI, or load the DiT with the moss-image node's loader"
+)
+
+
 def _time_mods(dit, times):
     """``(block (B,6,D), head (B,2,D))`` modulations at ``times`` (B,), as training."""
     # Training computes the sinusoid in float64 and feeds float32 into its MLP.
@@ -503,7 +518,9 @@ def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cach
             None if context is None else context.prompt_id,
         )
         x = args[0]
-        if hasattr(dit, "preprocess_refs"):
+        if is_core_moss(dit):
+            if not hasattr(dit, "preprocess_refs"):
+                raise RuntimeError(f"MOSS i2i Reference: {CORE_NO_REFS}")
             options = args[5] if len(args) > 5 else kwargs.get("transformer_options", {})
             conds = native_ref_conds(
                 executor.class_obj, ref, x, options, ref_timestep, ref_isolate, ref_cache, native, model_key

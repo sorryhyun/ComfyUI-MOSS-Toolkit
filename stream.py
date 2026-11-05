@@ -23,6 +23,8 @@ import comfy.patcher_extension
 import torch
 from comfy.ldm.modules.attention import attention_pytorch
 
+from .reference import is_core_moss
+
 logger = logging.getLogger(__name__)
 
 WRAPPER_KEY = "moss_toolkit_stream_fp32"
@@ -126,7 +128,7 @@ class MOSSStreamFP32:
         dit = model.get_model_object("diffusion_model")
         if not hasattr(dit, "shared_block_modulation"):
             raise ValueError("MOSS-Image fp32 Stream needs a MOSS-Image MODEL.")
-        if hasattr(dit, "preprocess_refs"):
+        if is_core_moss(dit):
             return (stream_fp32_core(model),)
         raise ValueError(
             "MOSS-Image fp32 Stream: the moss-image node's DiT is not supported. Load the "

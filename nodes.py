@@ -27,7 +27,7 @@ import torch
 from PIL import Image
 
 from . import lora_compat
-from .reference import make_apply_model_wrapper
+from .reference import CORE_NO_REFS, is_core_moss, make_apply_model_wrapper
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +323,9 @@ class MOSSi2iReference:
     def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="auto", ref_cache="gpu", bypass=False):
         if not _is_moss(model):
             raise ValueError("MOSS i2i Reference needs a MOSS-Image MODEL.")
+        dit = model.get_model_object("diffusion_model")
+        if is_core_moss(dit) and not hasattr(dit, "preprocess_refs"):
+            raise ValueError(f"MOSS i2i Reference: {CORE_NO_REFS}.")
         meta = None
         if lora_name == "None":
             logger.warning("MOSS i2i: no LoRA; the base never saw a reference")
