@@ -12,8 +12,8 @@ text encoder as the identical string. The output goes into any STRING input
 ``caption_to_layout``, then one text item per line the OCR reads off the B&W page
 (anima_lora ``library/moss/colorize.py`` ``captions = "ocr"``; ``dedupe`` /
 ``_colorize_layout`` mirror it). ``colorize_v5`` is the v5 caption (``captions =
-"control"``), no OCR text: a caption with a comic tag is a manga page, ``comic`` plus
-the ``character`` items of a layout-JSON caption plus a box-only text item per line
+"control"``), no OCR text: a caption with a comic tag is a manga page, ``comic`` (then
+a plain caption's other tags) plus the ``character`` items of a layout-JSON caption plus a box-only text item per line
 ``anime_tools.ocr.floors.keep_line`` keeps (the page connected); any other caption is
 an illustration, its series (the tag KB's copyright tags) and colour tags as layout
 JSON (``anime_tools.captions.color_tags``). The OCR models load once, each in a ComfyUI-managed
@@ -328,21 +328,25 @@ def _illustration_caption(caption: str) -> str:
 
 def _manga_v5_layout(caption: str, boxes: list, size) -> str:
     """``comic``, the caption's ``character`` items (a layout-JSON caption), then a
-    box-only ``text`` item per OCR line: the colorize v5 cache's manga draw."""
+    box-only ``text`` item per OCR line: the colorize v5 cache's manga draw. A plain
+    caption's other tags follow ``comic`` in ``summary.caption`` (comic tags dropped)."""
+    from anime_tools.captions.color_tags import is_comic_tag
+
     items = []
+    summary = "comic"
     if is_layout_json(caption):
         items = [
             it
             for it in json.loads(caption).get("items", [])
             if it.get("label") != "text"
         ]
-    elif [t for t in caption.split(",") if t.strip() and t.strip().lower() != "comic"]:
-        logger.warning(
-            "MOSS Caption Helper colorize_v5: a manga page's caption is comic alone; "
-            "give character colours as character items in layout JSON"
-        )
+    else:
+        rest = [
+            t.strip() for t in caption.split(",") if t.strip() and not is_comic_tag(t)
+        ]
+        summary = ", ".join(["comic", *rest])
     items += [{"label": "text", "bbox": centered_box(b, size)} for b in boxes]
-    layout: dict = {"summary": {"caption": "comic"}}
+    layout: dict = {"summary": {"caption": summary}}
     if items:
         layout.update(
             items=items, bbox_coord_space="abs_centralized", bbox_format="yxyx"
@@ -388,7 +392,8 @@ class MOSSCaptionHelper:
                             "Anima-format caption. colorize: the colour tags "
                             "the LoRA trained on: copyright, 'comic' for a manga "
                             "page, hair / eye / clothing colours. colorize_v5: "
-                            "'comic' for a manga page (character colours as "
+                            "'comic' for a manga page (other tags follow comic "
+                            "in the summary caption; boxed character colours as "
                             "layout-JSON character items), series + colour tags "
                             "for an illustration."
                         ),
@@ -404,8 +409,8 @@ class MOSSCaptionHelper:
                             "already is layout JSON passes through). colorize: the "
                             "same, plus a text item per line the OCR reads off "
                             "the page, boxed on the target canvas (v4 LoRA). "
-                            "colorize_v5: comic + a box-only text item per OCR "
-                            "line (no text), or an illustration's series + colour "
+                            "colorize_v5: comic (+ the caption's other tags) + a "
+                            "box-only text item per OCR line (no text), or an illustration's series + colour "
                             "tags (v5 LoRA). sanitize / "
                             "decensor: that LoRA's fixed caption, plain text; "
                             "the caption is ignored. swap_text: the caption as "
