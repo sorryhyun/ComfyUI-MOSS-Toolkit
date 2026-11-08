@@ -395,7 +395,8 @@ class MOSSCaptionHelper:
                             "'comic' for a manga page (other tags follow comic "
                             "in the summary caption; boxed character colours as "
                             "layout-JSON character items), series + colour tags "
-                            "for an illustration."
+                            "for an illustration. layout: a \\n inside a quoted "
+                            "text line is a line break in that text item."
                         ),
                     },
                 ),
