@@ -284,6 +284,13 @@ after it, and their weights download on first use. The helper needs
 pip install 'anime-tools @ git+https://github.com/sorryhyun/anime_tools'
 ```
 
+Write parentheses plain in the caption: `@channel (caststation)`, as the trainer's captions
+carry them. With `task = default` ComfyUI's tokenizer turns `\(` into `(`, but in layout JSON
+the backslash is stored doubled and the text encoder reads `\(`; the helper logs a warning
+when a layout task's caption holds `\(` or `\)`. ComfyUI's `(tag:1.2)` weights do not
+apply to the MOSS-Image text encoder (it tokenizes with weights off): the text reaches it as
+typed.
+
 The danbooru tag KB (`danbooru_tags_classified.csv`) is looked up under
 `$ANIME_TOOLS_HOME` / `$ANIMA_HOME` / the ComfyUI folder (`models/`) and downloaded
 there on first use. The old **Anima Caption → MOSS Layout JSON** node

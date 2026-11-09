@@ -119,6 +119,20 @@ def to_layout_json(caption: str) -> str:
     return caption if is_layout_json(caption) else layout_json(caption, _kb())
 
 
+def warn_escaped_parens(caption: str, node: str) -> None:
+    """Warn on ``\\(`` / ``\\)`` in a caption bound for layout JSON. The JSON stores the
+    backslash doubled and ComfyUI's tokenizer unescapes only one, so the text encoder
+    reads ``\\(``; the trainer's captions carry plain ``(`` (``@channel (caststation)``).
+    The default task is not affected: there the tokenizer turns ``\\(`` into ``(``."""
+    if "\\(" in caption or "\\)" in caption:
+        logger.warning(
+            "%s: the caption has \\( or \\); in layout JSON the text encoder reads "
+            "the backslash, and the LoRAs trained on plain parentheses. Write ( ) "
+            "without the backslash.",
+            node,
+        )
+
+
 class AnimaCaptionToMossLayout:
     """Map an Anima-format caption onto MOSS-Image's layout-JSON prompt.
 
@@ -161,6 +175,7 @@ class AnimaCaptionToMossLayout:
     )
 
     def convert(self, caption: str):
+        warn_escaped_parens(caption, "Anima Caption -> MOSS Layout")
         text = to_layout_json(caption.strip())
         logger.info("AnimaCaptionToMossLayout: %s", text)
         return (text,)
@@ -506,6 +521,8 @@ class MOSSCaptionHelper:
     def _prompt(self, caption, task, resolution, image):
         if task == "default":
             return caption
+        if task not in FIXED_CAPTIONS:
+            warn_escaped_parens(caption, f"MOSS Caption Helper ({task})")
         if task == "swap_text":
             return caption.strip()
         caption = caption.strip()
