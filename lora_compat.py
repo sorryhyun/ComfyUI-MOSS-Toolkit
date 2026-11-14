@@ -24,11 +24,19 @@ On a ConvRot INT8 linear, ``DownRows`` runs the ``down`` matrices as one small I
 in the weight's layout and only ``up`` in float. ``BypassForwardHook`` would set
 ``comfy_force_forward``, which drops ``ffn_down``'s situ fold; ``linear_input_act`` below
 keeps it. Any other linear (bf16, LoKr, LoHa) takes the hook.
+
+A LoRA trained with anima_lora's ``ref_adapters = kv`` carries a reference bank,
+``ref_layers_N_proj_{k,v}``: one adapter per block on the reference rows' keys and values,
+which run on the Base weights otherwise. ``split_ref_bank`` takes it out of the file
+(no module of the model has that name) as a ``RefBank``, and ``base_weights()`` turns every
+bypass adapter loaded here off for the forwards inside, so the reference rows see Base.
 """
 
+import contextlib
 import functools
 import inspect
 import logging
+import re
 
 import comfy.lora
 import comfy.lora_convert
@@ -78,6 +86,76 @@ SUFFIXES = (
     + LOKR
     + ("dora_scale", "diff_b", "set_weight", "w_norm", "b_norm")
 )
+
+
+REF_BANK_KEY = re.compile(
+    r"^(?:lora_unet_|diffusion_model\.|transformer\.)?ref_layers[._](\d+)[._]proj[._]([kv])"
+    r"\.(lora_down\.weight|lora_up\.weight|alpha)$"
+)
+
+_base_depth = 0
+
+
+@contextlib.contextmanager
+def base_weights():
+    """Every bypass adapter loaded by this module off (``Deltas`` adds zero, ``DownRows``
+    nothing) for the forwards inside: the Base weights, for a kv LoRA's reference rows.
+    Weight patches and other nodes' bypass hooks stay on."""
+    global _base_depth
+    _base_depth += 1
+    try:
+        yield
+    finally:
+        _base_depth -= 1
+
+
+class RefBank:
+    """A kv LoRA's reference bank: ``delta(block, "k" | "v", y)`` is
+    ``strength · alpha / rank · up(down(y))`` on the input ``y`` of that block's
+    ``proj.k`` / ``proj.v``, anima_lora's ``LoRAAdapter`` in the dtype of ``y``."""
+
+    def __init__(self, groups, strength):
+        self.groups = groups
+        self.strength = strength
+        self.blocks = 1 + max(index for index, _ in groups)
+        self._weights = None
+
+    @contextlib.contextmanager
+    def on(self, device, dtype):
+        """The bank on ``device`` for the K/V build inside, freed after: a copy kept on
+        the card past the build outlives the prompt, like a kept K/V."""
+        weights = {}
+        for (index, name), group in self.groups.items():
+            down, up = group["lora_down.weight"], group["lora_up.weight"]
+            alpha = group.get("alpha")
+            rank = down.shape[0]
+            scale = self.strength * (float(alpha) / rank if alpha is not None else 1.0)
+            weights[index, name] = (down.to(device, dtype), up.to(device, dtype), scale)
+        self._weights = weights
+        try:
+            yield self
+        finally:
+            self._weights = None
+
+    def delta(self, index, name, y):
+        down, up, scale = self._weights[index, name]
+        return torch.nn.functional.linear(torch.nn.functional.linear(y, down.to(y.dtype)), up.to(y.dtype)) * scale
+
+
+def split_ref_bank(lora):
+    """``(lora without its reference bank, {(block, "k" | "v"): {suffix: tensor}})``."""
+    rest, groups = {}, {}
+    for key, value in lora.items():
+        match = REF_BANK_KEY.match(key)
+        if match is None:
+            rest[key] = value
+            continue
+        index, name, suffix = match.groups()
+        groups.setdefault((int(index), name), {})[suffix] = value
+    broken = [k for k, g in groups.items() if not {"lora_down.weight", "lora_up.weight"} <= set(g)]
+    if broken:
+        raise ValueError(f"MOSS LoRA: reference bank adapters without down / up: {broken[:4]}")
+    return rest, groups
 
 
 def split_key(key):
@@ -208,9 +286,11 @@ class Deltas:
         self.device = device
 
     def h(self, x, base_out):
+        out = torch.zeros_like(base_out)
+        if _base_depth:
+            return out
         if self.device != x.device:
             self._to(x.device)
-        out = torch.zeros_like(base_out)
         for rows, adapter in self.parts:
             if rows is None:
                 out += adapter.h(x, base_out)
@@ -269,6 +349,8 @@ class DownRows:
         self.device = device
 
     def add(self, x, out, input_act=None, act_weight=None, act_eps=0.0):
+        if _base_depth:
+            return out
         if self.device != x.device:
             self._build(x.device)
         if input_act is None:
@@ -411,7 +493,15 @@ def load(model, lora, strength, name, bypass=False):
     """``model`` with ``lora`` at ``strength``, on its weights or, with ``bypass``, in
     its forward. Logs every non-block module it patches (``shared_block_modulation``,
     …) and the adapter modules this model has no weight for; raises when nothing
-    patches."""
+    patches. A reference bank left in ``lora`` is dropped with a warning: only MOSS i2i
+    Reference runs it."""
+    if any(REF_BANK_KEY.match(k) for k in lora):
+        logger.warning(
+            "MOSS LoRA %s: a kv LoRA (ref_adapters = kv); its reference bank needs MOSS i2i "
+            "Reference, here it is dropped and the reference rows run the LoRA",
+            name,
+        )
+        lora, _ = split_ref_bank(lora)
     lora = to_model_layout(lora, model_is_fused(model))
     key_map = comfy.lora.model_lora_keys_unet(model.model, {})
     lora = comfy.lora_convert.convert_lora(lora)

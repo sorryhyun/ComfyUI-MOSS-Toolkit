@@ -155,6 +155,22 @@ every block on a reseed (sampling 17 → 25 s), and the rebuild costs about a se
 time (for low VRAM); `off` runs the ref rows in every forward. v1 / v2 LoRAs
 (joint ref) always run the ref rows.
 
+### kv LoRAs
+
+A LoRA trained with anima_lora's `ref_adapters = kv` (stamped in its metadata, with
+`ref_layers_N_proj_{k,v}` keys) ran its ref rows on the Base weights, modulation included;
+only the keys and values the image and text rows read carry a per-block adapter of their own.
+The Reference node detects it and builds the ref K/V that way: the LoRA goes on in bypass
+(forced, logged), every bypass adapter loaded by this toolkit is off for the ref pass, and the
+bank's deltas go on `proj.k` / `proj.v` before `k_norm`. Loaded any other way (MOSS-Image
+LoRA, ComfyUI's Load LoRA), the bank is dropped and the ref rows run the LoRA, which it never
+saw in training. MOSS-Image Base, one 1024² page, blocks 0–41: V is 0.6–2.8% off anima_lora's
+on this path, 5–65% off with the LoRA on the ref rows. A LoRA added upstream by another node
+stays on in the ref pass.
+
+The ref pass runs outside ComfyUI's malloc graph (dynamic VRAM), one K/V build per prompt like
+any isolated ref. LoRAs trained with a second full bank (`ref_adapters = all`) raise.
+
 ### Wiring
 
 Colorize v5 (`example_workflows/moss-i2i-colorize-v5.json`): the v3 wiring with Caption

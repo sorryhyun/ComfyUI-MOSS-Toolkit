@@ -187,6 +187,22 @@ def load_lora(model, lora_name, strength, task="auto", bypass=False):
     meta = meta or {}
     if meta.get("base_model", "MOSS-Image") != "MOSS-Image":
         logger.warning("MOSS i2i: %s was trained on %s", lora_name, meta["base_model"])
+    if meta.get("ref_adapters") == "all":
+        raise ValueError(
+            f"MOSS i2i: {lora_name} trained a second LoRA bank for the reference rows "
+            "(ref_adapters = all), which this node does not run"
+        )
+    lora, groups = lora_compat.split_ref_bank(lora)
+    bank = None
+    if groups:
+        bank = lora_compat.RefBank(groups, strength)
+        logger.info(
+            "MOSS i2i: %s is a kv LoRA (ref_adapters = kv): ref rows on Base, %d-block K/V bank%s",
+            lora_name,
+            bank.blocks,
+            "" if bypass else ", bypass on (the ref rows need the Base weights)",
+        )
+        bypass = True
     if strength:
         model = lora_compat.load(model, lora, strength, lora_name, bypass)
     if is_ai_toolkit(meta):
@@ -204,6 +220,7 @@ def load_lora(model, lora_name, strength, task="auto", bypass=False):
         "ref_timestep": _ref_timestep(meta.get("ref_timestep")),
         # Stamped "1" by anima_lora when the ref queries saw only the ref keys.
         "ref_isolate": meta.get("ref_isolate") in ("1", "True"),
+        "ref_bank": bank,
     }
 
 
@@ -353,12 +370,18 @@ class MOSSi2iReference:
         ref = vae.encode(to_image(fit(page, rw, rh))).float().cpu()
         ref_timestep = None if meta is None else meta["ref_timestep"]
         ref_isolate = meta is not None and meta["ref_isolate"]
+        bank = None if meta is None else meta.get("ref_bank")
+        if bank is not None and (ref_timestep is None or not ref_isolate):
+            raise ValueError(
+                f"MOSS i2i: {lora_name} has a reference bank but no isolated ref with its own "
+                "timestep in its metadata"
+            )
         out = model.clone()
         out.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.APPLY_MODEL, WRAPPER_KEY)
         out.add_wrapper_with_key(
             comfy.patcher_extension.WrappersMP.APPLY_MODEL,
             WRAPPER_KEY,
-            make_apply_model_wrapper(ref, ref_timestep, ref_isolate, ref_cache),
+            make_apply_model_wrapper(ref, ref_timestep, ref_isolate, ref_cache, bank),
         )
         latent = torch.zeros(1, ref.shape[1], h // STRIDE, w // STRIDE)
         return (out, {"samples": latent})

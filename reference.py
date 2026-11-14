@@ -30,12 +30,21 @@ own centred grid, at t = 0, isolated (keys / values computed once, ``ref_kv``) o
 On that model the wrapper passes the ref to it (``native_ref_conds``) instead. The two
 agree for a full-size ref at ``ref_timestep`` 0 or shared; a smaller ref (colorize v1 /
 v2) needs the stretched grid, so the ``moss-image`` node's own loader.
+
+A kv LoRA (anima_lora ``ref_adapters = kv``, a ``lora_compat.RefBank``) trained its ref
+rows on the Base weights, modulation included, and only the keys and values the image
+and text rows read carry the bank's deltas (``_Block.ref_rows`` / ``_ref_export``). Its
+ref K/V is built here on both models (``core_ref_kv``, ``_ref_pass_bank``) inside
+``lora_compat.base_weights()``, so the LoRA must be in bypass.
 """
 
+import contextlib
 import logging
 import sys
 
 import torch
+
+from . import lora_compat
 
 try:
     from comfy_execution.utils import get_executing_context
@@ -164,6 +173,28 @@ def _ref_pass(layer, ops, x, rope, mod):
     return x + layer.proj["ffn_down"](situ(hidden, gate)) * a[5][:, None], k, v
 
 
+def _ref_pass_bank(layer, ops, x, rope, mod, bank, index):
+    """``_ref_pass`` for a kv LoRA (run inside ``base_weights()``): the ref rows on
+    Base, and the keys (``k_norm``'d, before RoPE) and values the image and text rows
+    read, ``bank``'s deltas on ``proj.k`` / ``proj.v``."""
+    attention, situ, _, _ = ops
+    a = mod.unbind(1)
+    heads = layer.heads
+    y = layer.norm1(x) * (1 + a[1][:, None]) + a[0][:, None]
+    dtype = layer.proj["q"].weight.dtype
+    y = y.to(dtype)
+    raw_k, v = layer.proj["k"](y), layer.proj["v"](y)
+    q = layer.q_norm(layer.proj["q"](y).unflatten(-1, (heads, -1))).flatten(2)
+    k = layer.k_norm(raw_k.unflatten(-1, (heads, -1))).flatten(2)
+    x = x + layer.proj["o"](attention(q, k, v, rope, heads)) * a[2][:, None]
+    k_out = (raw_k + bank.delta(index, "k", y).to(raw_k.dtype)).unflatten(-1, (heads, -1))
+    k_out = layer.k_norm(k_out).flatten(2)
+    v_out = v + bank.delta(index, "v", y).to(v.dtype)
+    y = layer.norm2(x) * (1 + a[4][:, None]) + a[3][:, None]
+    hidden, gate = layer.proj["ffn_up_gate"](y.to(dtype)).chunk(2, -1)
+    return x + layer.proj["ffn_down"](situ(hidden, gate)) * a[5][:, None], k_out, v_out
+
+
 def _main_block(layer, ops, x, rope, mod, k_ref, v_ref, ref_rope, n_img):
     """``moss-image``'s ``_Block.forward`` on ``x = [image | text]``, the keys and
     values of an isolated ref (``_ref_pass``'s, ``ref_rope`` for this call's text
@@ -251,15 +282,23 @@ class RefKV:
             self.key = key
         return self.rows
 
-    def build(self, dit, ref, ref_mod, height, width, text_length, device):
+    def build(self, dit, ref, ref_mod, height, width, text_length, device, bank=None):
+        """With ``bank`` (a kv LoRA; call inside ``base_weights()``) each block runs
+        ``_ref_pass_bank``, eager."""
         rows, size = [], 0
         for r in range(ref.shape[0]):
             x = _embed_latent(dit, ref[r][None])
             rope = ref_rope(dit, height, width, tuple(ref.shape[-2:]), text_length, device)
             rope = rope.to(x.dtype)
             layers = []
-            for layer in dit.layers:
-                x, k, v = _on(_ref_pass, layer, x, rope, ref_mod)
+            for index, layer in enumerate(dit.layers):
+                if bank is None:
+                    x, k, v = _on(_ref_pass, layer, x, rope, ref_mod)
+                else:
+                    base = getattr(layer, "_orig_mod", layer)
+                    ops = sys.modules[type(base).__module__]
+                    fns = (ops._attention, ops._situ, ops._rotate, ops.optimized_attention)
+                    x, k, v = _ref_pass_bank(base, fns, x, rope, ref_mod, bank, index)
                 if self.store == "cpu":
                     k, v = k.cpu().pin_memory(), v.cpu().pin_memory()
                 layers.append((k, v))
@@ -294,13 +333,16 @@ def forward_with_ref(
     ref_isolate=False,
     ref_kv=None,
     model_key=None,
+    bank=None,
     **kwargs,
 ):
     """``ref (1 or B, 128, h, w)``: clean reference latents, in every CFG branch.
     ``ref_timestep`` (DiT units, 0–1000): the ref rows' own modulation timestep;
     None shares the step's. ``ref_isolate``: the ref rows attend only to themselves
     and still run through skipped blocks. ``ref_kv`` (a ``RefKV``; isolated ref with
-    its own timestep only): run the ref once, keyed on ``model_key``."""
+    its own timestep only): run the ref once, keyed on ``model_key``. ``bank`` (a kv
+    LoRA's ``RefBank``): the ref on Base with the bank's K/V deltas, always through a
+    ``RefKV`` (a fresh one per forward without ``ref_kv``)."""
     transformer_options = transformer_options.copy()
     blocks_replace = transformer_options.get("patches_replace", {}).get("dit", {})
     hidden_states, encoder_hidden_states = x, context
@@ -324,18 +366,28 @@ def forward_with_ref(
     mod, head = _time_mods(dit, times)
     ref_mod = None
     if ref_timestep is not None:
-        ref_mod, _ = _time_mods(dit, torch.full_like(times, float(ref_timestep)))
+        with lora_compat.base_weights() if bank is not None else contextlib.nullcontext():
+            ref_mod, _ = _time_mods(dit, torch.full_like(times, float(ref_timestep)))
         ref_mod = ref_mod.to(mod.dtype)
+    if bank is not None:
+        if not ref_isolate or ref_mod is None:
+            raise ValueError("MOSS i2i: a kv LoRA's reference bank needs an isolated ref with its own timestep")
+        if ref_kv is None:
+            ref_kv = RefKV("gpu")
     cached = None
     if ref_kv is not None and ref_isolate and ref_mod is not None:
         length = int(mask[0].sum())
         key = (model_key, hidden_states.device, height, width, float(ref_timestep))
-        cached = ref_kv.get(
-            key,
-            lambda: ref_kv.build(
-                dit, ref, ref_mod[:1], height, width, length, hidden_states.device
-            ),
-        )
+
+        def build():
+            if bank is None:
+                return ref_kv.build(dit, ref, ref_mod[:1], height, width, length, hidden_states.device)
+            with lora_compat.base_weights(), bank.on(hidden_states.device, dit.video_embedder.weight.dtype):
+                return ref_kv.build(
+                    dit, ref, ref_mod[:1], height, width, length, hidden_states.device, bank
+                )
+
+        cached = ref_kv.get(key, build)
     outputs = []
     for index in range(batch):
         if cached is not None:
@@ -458,16 +510,68 @@ def _forward_cached(dit, kv, ref_hw, latent, context, vec, head, blocks_replace,
     return x.transpose(1, 2).reshape(1, -1, height, width)
 
 
-def native_ref_conds(model, ref, x, transformer_options, ref_timestep, ref_isolate, store, cache, model_key):
+def core_ref_kv(dit, refs, transformer_options, bank):
+    """``MOSSImage.preprocess_refs`` for a kv LoRA: the refs at t = 0 on the Base weights
+    (every bypass adapter off, ``shared_block_modulation``'s too) and each block's keys
+    (normed, rotated) and values with ``bank``'s deltas on ``proj.k`` / ``proj.v``. The
+    block runs after its keys and values are taken: its residuals update ``x`` in place.
+    Outside ComfyUI's malloc graph (dynamic VRAM): recorded, the build's extra
+    allocations broke the graph in every block, 44 breaks and 588 rogues a prompt, and
+    sampling ran 1.4 → 2.1 s/it over successive prompts."""
+    from comfy.ldm.moss_image.model import modulate, rope_split_half, timestep_embedding
+    import comfy.model_prefetch
+    import comfy.utils
+
+    device = refs[0].device
+    with (
+        comfy.model_prefetch.pause_malloc_graph(sync=True),
+        lora_compat.base_weights(),
+        bank.on(device, refs[0].dtype),
+    ):
+        batch = max(ref.shape[0] for ref in refs)
+        x = torch.cat(
+            [
+                dit.video_embedder(comfy.utils.repeat_to_batch_size(ref, batch).flatten(2).transpose(1, 2))
+                for ref in refs
+            ],
+            dim=1,
+        )
+        pe = dit.rope(0, 0, 0, x.device, transformer_options, [ref.shape[-2:] for ref in refs])
+        vec = dit.time_embedding(timestep_embedding(torch.zeros(1, device=x.device), 256).to(x.dtype))
+        mod = dit.shared_block_modulation(vec).unflatten(-1, (6, -1)).unsqueeze(2).unbind(1)
+        kv = x.new_empty((x.shape[0], len(dit.layers), 2) + x.shape[1:])
+        queue = comfy.model_prefetch.make_prefetch_queue(list(dit.layers), x.device, transformer_options)
+        for index, block in enumerate(dit.layers):
+            comfy.model_prefetch.prefetch_queue_pop(queue, x.device, block, x.dtype)
+            y = modulate(x, block.norm1, mod, 0, None)
+            if block.fused_qkv:
+                _, k, v = block.proj["qkv"](y).chunk(3, dim=-1)
+            else:
+                k, v = block.proj["k"](y), block.proj["v"](y)
+            y = y.to(k.dtype)
+            k = k + bank.delta(index, "k", y)
+            k = rope_split_half(block.k_norm(k.unflatten(-1, (block.num_heads, -1))), pe)
+            kv[:, index, 0].copy_(k.flatten(2))
+            kv[:, index, 1].copy_(v + bank.delta(index, "v", y))
+            del y, k, v
+            x = block(x, mod, pe, transformer_options)
+        comfy.model_prefetch.prefetch_queue_pop(queue, x.device, None)
+    return kv
+
+
+def native_ref_conds(model, ref, x, transformer_options, ref_timestep, ref_isolate, store, cache, model_key, bank=None):
     """Extra conds for ComfyUI's ``MOSSImage._forward`` that carry ``ref``; an isolated
     ref's ``ref_kv`` is built once per ``model_key`` / device and kept in ``cache``
-    (``store`` gpu / cpu; off: rebuilt every forward)."""
+    (``store`` gpu / cpu; off: rebuilt every forward). ``bank`` (a kv LoRA) builds it
+    with ``core_ref_kv``, under ``off`` too."""
     if tuple(ref.shape[-2:]) != tuple(x.shape[-2:]):
         raise ValueError(
             f"MOSS i2i: ComfyUI's MOSS-Image model puts the ref on its own grid, so the ref "
             f"must match the image ({tuple(ref.shape[-2:])} vs {tuple(x.shape[-2:])}): a "
             f"half-size ref needs the moss-image node's DiT (its MOSS-Image HF Loader)"
         )
+    if bank is not None and (ref_timestep != 0 or not ref_isolate):
+        raise ValueError("MOSS i2i: a kv LoRA's reference bank needs an isolated ref at t = 0")
     if ref_timestep is None:
         if ref_isolate:
             raise ValueError("MOSS i2i: ComfyUI's MOSS-Image model isolates refs at t = 0 only")
@@ -479,13 +583,19 @@ def native_ref_conds(model, ref, x, transformer_options, ref_timestep, ref_isola
         )
     if not ref_isolate:
         return {"ref_latents": [ref], "ref_latents_method": "index_timestep_zero"}
+    dit = model.diffusion_model
+    refs = [ref.to(x.device, model.get_dtype_inference())]
     if store == "off":
+        if bank is not None:
+            return {"ref_kv": core_ref_kv(dit, refs, transformer_options, bank)}
         return {"ref_latents": [ref], "ref_latents_method": "index_timestep_zero_isolated"}
     key = (model_key, x.device)
     if cache.get("key") != key:
         cache.clear()
-        dit = model.diffusion_model
-        kv = dit.preprocess_refs([ref.to(x.device, model.get_dtype_inference())], transformer_options)
+        if bank is not None:
+            kv = core_ref_kv(dit, refs, transformer_options, bank)
+        else:
+            kv = dit.preprocess_refs(refs, transformer_options)
         if store == "cpu":
             kv = kv.cpu().pin_memory()
         cache.update(key=key, kv=kv)
@@ -493,7 +603,7 @@ def native_ref_conds(model, ref, x, transformer_options, ref_timestep, ref_isola
     return {"ref_kv": cache["kv"]}
 
 
-def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cache="gpu"):
+def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cache="gpu", bank=None):
     """``APPLY_MODEL`` wrapper: for the length of one ``_apply_model`` call, the live
     ``diffusion_model`` runs ``forward_with_ref``. Spectrum's cached steps never
     reach ``apply_model``, so they cost no ref rows. ``ref_cache`` (``gpu`` / ``cpu``
@@ -523,7 +633,7 @@ def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cach
                 raise RuntimeError(f"MOSS i2i Reference: {CORE_NO_REFS}")
             options = args[5] if len(args) > 5 else kwargs.get("transformer_options", {})
             conds = native_ref_conds(
-                executor.class_obj, ref, x, options, ref_timestep, ref_isolate, ref_cache, native, model_key
+                executor.class_obj, ref, x, options, ref_timestep, ref_isolate, ref_cache, native, model_key, bank
             )
             return executor(*args, **{**kwargs, **conds})
         key = x.device
@@ -542,6 +652,7 @@ def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cach
                 ref_isolate=ref_isolate,
                 ref_kv=ref_kv,
                 model_key=model_key,
+                bank=bank,
                 **f_kwargs,
             )
 
