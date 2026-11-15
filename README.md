@@ -101,7 +101,9 @@ No weight changes and nothing reloads, so dynamic VRAM stays on and the node can
 anywhere in the MODEL chain: the sampled latent stays fp32 going in, and only the blocks'
 GEMM inputs and the attention stay in the model's compute dtype (INT8 GEMMs stay INT8).
 An isolated ref's keys and values stay on a stream in the compute dtype, a joint ref runs
-in fp32. The node raises on a `moss-image` node DiT.
+in fp32. The node raises on a `moss-image` node DiT. The text embedder, whose two blocks
+run whole in fp32, runs once per distinct prompt in a queued run instead of once per
+forward: 14 ms less per CFG step at 1024² (530 → 515 ms INT8, 1226 → 1211 ms bf16).
 
 Prediction error of MOSS-Image Base against an fp32 forward (relative L2, one latent,
 RTX 5070 Ti). 30 steps at 1024² with CFG took 14 s against 13 s:

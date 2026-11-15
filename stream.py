@@ -14,6 +14,11 @@ fp32.
 An isolated ref's keys and values (``ref_kv``, cached or not) come from
 a stream in the compute dtype, since they join the blocks' attention there. A joint ref,
 in the sequence, runs in fp32.
+
+The text embedder reads the prompt, the text rows of the RoPE table and the text mask,
+not the latent or the timestep, so ``TextCache`` runs it once per distinct prompt in a
+queued run instead of once per forward: in fp32 its two blocks are the larger part of
+the per-step cost outside the 42 blocks.
 """
 
 import logging
@@ -34,14 +39,73 @@ STREAM_READERS = ("qkv", "q", "k", "v", "ffn_up_gate")
 # ``ref_latents_method``s whose refs ride in the sequence; any other builds ``ref_kv``,
 # whose keys and values join the blocks' attention in the compute dtype.
 SEQUENCE_REFS = ("index", "index_timestep_zero")
+# Text embedder outputs kept per model: cond, uncond, and a few more for area or
+# multiple conds.
+TEXT_CACHE_SIZE = 8
+
+try:
+    from comfy_execution.utils import get_executing_context
+except ImportError:
+    def get_executing_context():
+        return None
 
 
-def apply_model_wrapper(executor, x, t, c_concat=None, *args, **kwargs):
+def _same(a, b):
+    if a is None or b is None:
+        return a is None and b is None
+    return a.shape == b.shape and a.device == b.device and a.dtype == b.dtype and torch.equal(a, b)
+
+
+class TextCache:
+    """``text_embedder`` outputs ``(B, S, 3072)`` in fp32 for one model and one queued
+    run. An entry matches on the context (after ``.float()``), the text RoPE rows (which
+    carry ``f_offset``) and the text mask, compared by value: ComfyUI builds the context
+    anew each step. A changed ``model_key`` (``id(dit)``, weight patches, ``prompt_id``)
+    drops every entry; a bypass LoRA's strength changes only with a new ``prompt_id``.
+    ``_forward`` copies the output into the sequence with ``torch.cat``, so an entry is
+    returned as is."""
+
+    def __init__(self, size=TEXT_CACHE_SIZE):
+        self.size = size
+        self.model_key = None
+        self.entries = []
+        self.builds = 0
+        self.hits = 0
+
+    def begin(self, model_key):
+        if model_key != self.model_key:
+            self.model_key = model_key
+            self.entries.clear()
+
+    def lookup(self, context, pe, mask, build):
+        for c, p, m, tokens in self.entries:
+            if _same(c, context) and _same(p, pe) and _same(m, mask):
+                self.hits += 1
+                return tokens
+        tokens = build()
+        self.entries.append((context, pe.clone(), None if mask is None else mask.clone(), tokens))
+        del self.entries[: -self.size]
+        self.builds += 1
+        return tokens
+
+
+def make_apply_model_wrapper(text_cache=None):
+    """The fp32 stream wrapper, holding ``text_cache`` (a ``TextCache``, ``None`` for
+    none). Clones of the model share it; its key keeps them apart."""
+
+    def wrapper(executor, x, t, c_concat=None, *args, **kwargs):
+        return apply_model_wrapper(executor, x, t, c_concat, *args, text_cache=text_cache, **kwargs)
+
+    return wrapper
+
+
+def apply_model_wrapper(executor, x, t, c_concat=None, *args, text_cache=None, **kwargs):
     """One ``_apply_model`` with ``x`` kept fp32 (it would truncate it to the compute
     dtype), pre-hooks casting the blocks' stream input to that dtype and every op
     casting its weight, which dynamic VRAM does anyway and a fully loaded plain
-    patcher does not. All last the one call, so clones of the model without the patch
-    stay untouched."""
+    patcher does not. With ``text_cache`` and a queued run, ``text_embedder`` goes
+    through it. All last the one call, so clones of the model without the patch stay
+    untouched."""
     base = executor.class_obj
     dit = base.diffusion_model
     compute = base.get_dtype_inference()
@@ -85,6 +149,19 @@ def apply_model_wrapper(executor, x, t, c_concat=None, *args, **kwargs):
     for attention in sdpa:
         attention.function = attention_pytorch
     dit.forward = forward
+
+    embedder = dit.text_embedder
+    embed = embedder.forward
+    previous_embed = embedder.__dict__.get("forward")
+    context = get_executing_context()
+    cached = text_cache is not None and context is not None
+    if cached:
+        text_cache.begin((id(dit), getattr(base, "current_weight_patches_uuid", None), context.prompt_id))
+
+        def embed_cached(txt, pe, transformer_options={}, mask=None):
+            return text_cache.lookup(txt, pe, mask, lambda: embed(txt, pe, transformer_options, mask))
+
+        embedder.forward = embed_cached
     try:
         return executor(x, t, c_concat, *args, **kwargs)
     finally:
@@ -94,6 +171,11 @@ def apply_model_wrapper(executor, x, t, c_concat=None, *args, **kwargs):
             attention.function = None
         for hook in hooks:
             hook.remove()
+        if cached:
+            if previous_embed is None:
+                del embedder.forward
+            else:
+                embedder.forward = previous_embed
         if previous is None:
             del dit.forward
         else:
@@ -104,7 +186,9 @@ def stream_fp32_core(model):
     """A clone of a ComfyUI ``MOSSImage`` MODEL with the fp32 stream."""
     out = model.clone()
     out.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.APPLY_MODEL, WRAPPER_KEY)
-    out.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.APPLY_MODEL, WRAPPER_KEY, apply_model_wrapper)
+    out.add_wrapper_with_key(
+        comfy.patcher_extension.WrappersMP.APPLY_MODEL, WRAPPER_KEY, make_apply_model_wrapper(TextCache())
+    )
     return out
 
 
