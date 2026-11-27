@@ -12,14 +12,15 @@ Stream (:mod:`.stream`):
 
 i2i (:mod:`.nodes`, self-contained, pulls no anima_lora code):
 
-* ``MOSSi2iTextEncode`` — CLIP + IMAGE + text -> CONDITIONING, the page through
-  Qwen3.5's vision tower ahead of the text.
+* ``MOSSi2iTextEncode`` — deprecated, hidden from the menu; CLIP + IMAGE + text ->
+  CONDITIONING, the page through Qwen3.5's vision tower (colorize v2 only), kept so
+  saved workflows load.
 * ``MOSSi2iReference`` — MODEL + VAE + IMAGE -> MODEL + LATENT, a MOSS i2i LoRA plus
   the page as a clean VAE latent on RoPE's reserved ``r = 1`` axis.
 
 Text (:mod:`.moss_layout`, registered only when ``anime-tools`` is installed):
 
-* ``MOSSCaptionHelper`` — STRING (+ IMAGE, CLIP) -> STRING, CONDITIONING, per task:
+* ``MOSSCaptionHelper`` — STRING + LATENT (+ IMAGE, CLIP) -> STRING, CONDITIONING, per task:
   ``layout`` an Anima caption as MOSS's layout-JSON prompt,
   ``colorize`` that layout plus the page's OCR lines, the colorize LoRA's caption,
   ``sanitize`` / ``decensor`` that LoRA's fixed caption, ``swap_text`` the layout JSON

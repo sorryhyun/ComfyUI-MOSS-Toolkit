@@ -135,13 +135,13 @@ text-only prompt (a plain CLIP Text Encode). v2 uses both paths, the ref at half
 | Colorize | Ref | Prompt encode |
 |---|---|---|
 | v3 (`ref_isolate` in the metadata) | full size, isolated | CLIP Text Encode, no page |
-| v2 | half size (`ref_scale 2`), joint | MOSS i2i Text Encode (page + text) |
+| v2 | half size (`ref_scale 2`), joint | MOSS i2i Text Encode (page + text; deprecated, hidden from the menu) |
 
 ### Nodes
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS i2i Text Encode (page + text)** | CLIP, IMAGE, text → CONDITIONING | `<|vision_start|>[page]<|vision_end|>{text}`. Empty text = page only. The page is fit to the target size and seen at that pixel count (~1000 tokens at 1 MP) |
+| **MOSS i2i Text Encode (page + text)** | CLIP, IMAGE, text → CONDITIONING | Deprecated and hidden from the menu: only the colorize v2 LoRA uses it, and saved v2 workflows still load. `<|vision_start|>[page]<|vision_end|>{text}`. Empty text = page only |
 | **MOSS i2i Reference** | MODEL, VAE, IMAGE → MODEL, LATENT | Loads the i2i LoRA (`lora_name`, `strength`; any key layout, see [LoRA files](#lora-files)) and reads `reference_latents`, `ref_scale`, `ref_timestep` and `ref_isolate` from its metadata. `task = auto` sets the ref size from the recipe the LoRA trained with: full size for an isolated ref, half for a joint ref. Workflows saved with `task = colorize` run as `auto`; ones saved with `task = custom` still load and use `ref_scale` (ref at `1/ref_scale` per side, 2 = 1/4 area). The ref goes into every forward and every CFG branch. `ref_cache`: see below. Also outputs an empty latent at the target size |
 
 ### Ref K/V cache
@@ -188,12 +188,15 @@ from the reference.
 Colorize v3 (`example_workflows/moss-i2i-colorize-v3.json`):
 
 ```
-MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA, task auto) ────── MODEL ─┐
-                  ─ CLIP ─┬ CLIP Text Encode (Caption Helper's prompt) ─ positive ─┤
-                          └ CLIP Text Encode ("") ─────────────────── negative ─┤ KSampler /
-                  ─ VAE ──── MOSS i2i Reference ───────────────────── LATENT ───┘ MOSS Spectrum KSampler
+MOSS-Image Loader ─ MODEL ─ MOSS i2i Reference (LoRA, task auto) ──── MODEL ──┐
+                  ─ VAE ──── MOSS i2i Reference ─────────────────────── LATENT ─┤
+                  ─ CLIP ─┬ MOSS Caption Helper (latent, clip) ─ conditioning ─┤ KSampler /
+                          └ CLIP Text Encode ("") ─────────────────── negative ─┘ MOSS Spectrum KSampler
 Load Image (page) → Reference.image, Caption Helper.image (task colorize, colour tags)
+Reference.LATENT → KSampler.latent_image and Caption Helper.latent
 ```
+
+The Reference's `resolution` sets the canvas; the Caption Helper reads it off the latent.
 
 Colorize v2 (`example_workflows/moss-i2i-colorize.json`):
 
@@ -212,7 +215,7 @@ needs no image).
 
 Swap text (JA lettering → translated): the same wiring, with the positive a layout-JSON
 prompt that lists one text item per line to letter, its `bbox` in `abs_centralized`
-`yxyx` pixels of the page at the Reference's `resolution` (a balloon left out stays
+`yxyx` pixels of the canvas (the Reference's `resolution`; a balloon left out stays
 Japanese). Type it into Caption Helper with `task swap_text`, connect the CLIP to the
 helper's `clip`, and take its `conditioning` output as the positive. A LoRA trained
 with anima_lora's `token_split = syllable` (stamped `token_split` in its metadata)
@@ -222,7 +225,7 @@ tokenizer, so a prompt string through a plain `CLIP Text Encode` loses it. For
 English, or a swap_text LoRA without the split, `task layout` into `CLIP Text Encode`
 is the same prompt.
 
-Use the same `resolution` on Text Encode, Caption Helper and Reference. The negative is a plain text
+The negative is a plain text
 encode of `""`, which is what the LoRA was evaluated with. For CFG 3 with the uncond
 block-22 skip, use the MOSS Spectrum KSampler. anima_lora's colorize eval ran 30 steps,
 CFG 3, ER-SDE, Spectrum at its defaults, with the fp8 TE. That is the v3 example
@@ -286,11 +289,10 @@ live `diffusion_model` runs a ref-aware copy of the `moss-image` forward.
 
 | Node | In → out | Notes |
 |---|---|---|
-| **MOSS Caption Helper** | STRING, task (+ IMAGE, CLIP) → STRING, CONDITIONING | `task = default`: the caption as written. `task = layout`: `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item (a `\n` inside the quotes is a line break in the item's text, anime-tools 0.9.6 or later). Every meta or unknown tag ahead of the first count tag (`1girl`, `2boys`, …) is front matter and goes to `summary.meta`. A caption that already is layout JSON (an object with `summary`) passes through as typed, as in the trainer. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on (since anime-tools 0.9.5 the reader returns a block's line breaks, which reach the item's text). Boxes are `abs_centralized` `yxyx` on the canvas the i2i nodes generate at, so use the same `resolution`. `task = colorize_v5`: the colorize v5 LoRA's caption, no OCR text. A caption with a comic tag is a manga page: `{"summary":{"caption":"comic"}}` (a plain caption's other tags follow `comic` there, its comic tags dropped), the `character` items of a layout-JSON caption, then one box-only `{"label":"text","bbox":…}` item per line `anime_tools.ocr.floors.keep_line` keeps on the connected page. Any other caption is an illustration: its series (the tag KB's copyright tags) and colour tags as layout JSON, the rest dropped. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on. `task = decensor`: `no bar censor, no mosaic censor, uncensored`, likewise for the decensor LoRA. Both ignore the caption input. `task = swap_text`: the caption as written (the page's layout JSON); with `clip` connected, Hangul encodes one syllable per token, a space before a syllable as its own token, as anima_lora's `token_split = syllable` (`token_split.py`, a copy of `library/moss/token_split.py`), identical token ids to the trainer on its eval pages. The `prompt` string carries no split. With `clip` connected, every task also outputs `conditioning`, the prompt encoded as a plain `CLIP Text Encode` would. `put_endthink` (off by default) outputs the whole chat turn, `<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n` + `\n</think>\n\nSure,`, byte-identical to anima_lora's `prompt_tail = sure` (the trainer's cache default; on Base it sharpens hands and backgrounds). The MOSS tokenizer skips its own template for a prompt starting with `<|im_start|>`, so the tail lands after the generation prompt. Use it with a plain `CLIP Text Encode` and LoRAs cached on `sure`; leave it off for LoRAs cached on `off` (the i2i ones) and for MOSS i2i Text Encode. The trainer tails the uncond too, but a plain `""` negative renders nearly the same |
+| **MOSS Caption Helper** | STRING, task, LATENT (+ IMAGE, CLIP) → STRING, CONDITIONING | `task = default`: the caption as written. `task = layout`: `anime_tools.captions.layout_json`, byte-identical to what the anima_lora MOSS trainer encodes with `caption_format=layout_json`. Rating / meta, characters, series and `@artists` get their own `summary` keys, the other tags become `summary.caption`, each position clause a character item, each quoted text line a text item (a `\n` inside the quotes is a line break in the item's text, anime-tools 0.9.6 or later). Every meta or unknown tag ahead of the first count tag (`1girl`, `2boys`, …) is front matter and goes to `summary.meta`. A caption that already is layout JSON (an object with `summary`) passes through as typed, as in the trainer. `task = colorize`: that layout plus one `{"label":"text","caption":"text","text":…,"bbox":…}` item per line the OCR reads off the page, the caption the colorize LoRA trained on (since anime-tools 0.9.5 the reader returns a block's line breaks, which reach the item's text). Boxes are `abs_centralized` `yxyx` on the canvas of the connected `latent` (the Reference's LATENT). `task = colorize_v5`: the colorize v5 LoRA's caption, no OCR text. A caption with a comic tag is a manga page: `{"summary":{"caption":"comic"}}` (a plain caption's other tags follow `comic` there, its comic tags dropped), the `character` items of a layout-JSON caption, then one box-only `{"label":"text","bbox":…}` item per line `anime_tools.ocr.floors.keep_line` keeps on the connected page. Any other caption is an illustration: its series (the tag KB's copyright tags) and colour tags as layout JSON, the rest dropped. `task = sanitize`: `no sfx, no dialogue, no watermark` verbatim, the one caption every sanitize pair trained on. `task = decensor`: `no bar censor, no mosaic censor, uncensored`, likewise for the decensor LoRA. Both ignore the caption input. `task = swap_text`: the caption as written (the page's layout JSON); with `clip` connected, Hangul encodes one syllable per token, a space before a syllable as its own token, as anima_lora's `token_split = syllable` (`token_split.py`, a copy of `library/moss/token_split.py`), identical token ids to the trainer on its eval pages. The `prompt` string carries no split. With `clip` connected, every task also outputs `conditioning`, the prompt encoded as a plain `CLIP Text Encode` would. `put_endthink` (off by default) outputs the whole chat turn, `<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n` + `\n</think>\n\nSure,`, byte-identical to anima_lora's `prompt_tail = sure` (the trainer's cache default; on Base it sharpens hands and backgrounds). The MOSS tokenizer skips its own template for a prompt starting with `<|im_start|>`, so the tail lands after the generation prompt. Use it with a plain `CLIP Text Encode` and LoRAs cached on `sure`; leave it off for LoRAs cached on `off` (the i2i ones). The trainer tails the uncond too, but a plain `""` negative renders nearly the same |
 
-Feed the layout output into `CLIP Text Encode` with MOSS-Image's text encoder, the
-colorize output into **MOSS i2i Text Encode** as its `text` (v2) or a plain `CLIP Text
-Encode` (v3), the sanitize and decensor outputs into a plain `CLIP Text Encode`. For colorize, type the
+Connect `latent` to the Reference's LATENT and `clip` to the MOSS-Image text encoder, then
+wire `conditioning` to the KSampler's positive. For colorize, type the
 colour tags the LoRA trained on (copyright, `comic` for a manga page, hair / eye /
 clothing colours). The OCR is anime-tools' AnimeText detector with the manga VL
 reader on every box; both load for the read (~6 GB VRAM freed first) and unload

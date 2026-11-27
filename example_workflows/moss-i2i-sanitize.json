@@ -2,7 +2,7 @@
   "id": "a5f22131-8d8c-405d-88f0-32d54175956c",
   "revision": 0,
   "last_node_id": 24,
-  "last_link_id": 44,
+  "last_link_id": 47,
   "nodes": [
     {
       "id": 3,
@@ -47,7 +47,8 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            15
+            15,
+            45
           ]
         }
       ],
@@ -139,7 +140,7 @@
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 44
+          "link": 47
         },
         {
           "name": "negative",
@@ -311,7 +312,7 @@
           "type": "CLIP",
           "links": [
             25,
-            42
+            46
           ]
         },
         {
@@ -361,18 +362,33 @@
       "mode": 0,
       "inputs": [
         {
+          "name": "latent",
+          "type": "LATENT",
+          "link": 45
+        },
+        {
           "name": "image",
           "shape": 7,
           "type": "IMAGE",
           "link": null
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 46
         }
       ],
       "outputs": [
         {
           "name": "prompt",
           "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
           "links": [
-            43
+            47
           ]
         }
       ],
@@ -384,7 +400,7 @@
       "widgets_values": [
         "",
         "sanitize",
-        1024
+        false
       ],
       "widgets_values_named": {
         "caption": "no sfx, no text",
@@ -433,56 +449,6 @@
       "widgets_values_named": {
         "image": "image (6).png",
         "upload": "image"
-      }
-    },
-    {
-      "id": 24,
-      "type": "CLIPTextEncode",
-      "pos": [
-        1368.9411020264422,
-        135.94926068346854
-      ],
-      "size": [
-        400,
-        200
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 42
-        },
-        {
-          "name": "text",
-          "type": "STRING",
-          "widget": {
-            "name": "text"
-          },
-          "link": 43
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            44
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.41.2",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        ""
-      ],
-      "widgets_values_named": {
-        "text": "worst quality, old, bad quality, simple background, greyscale, sepia, blurry, glitch, jpeg artifacts, bad hands, bad anatomy, multiple views, nsfw"
       }
     }
   ],
@@ -568,25 +534,25 @@
       "IMAGE"
     ],
     [
-      42,
+      45,
+      3,
+      1,
+      22,
+      0,
+      "LATENT"
+    ],
+    [
+      46,
       17,
       1,
-      24,
-      0,
+      22,
+      2,
       "CLIP"
     ],
     [
-      43,
+      47,
       22,
-      0,
-      24,
       1,
-      "STRING"
-    ],
-    [
-      44,
-      24,
-      0,
       5,
       1,
       "CONDITIONING"

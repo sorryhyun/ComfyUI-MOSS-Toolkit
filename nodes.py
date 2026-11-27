@@ -135,7 +135,13 @@ class MOSSi2iTextEncode:
     """The page through Qwen3.5's vision tower, then the text, in one user turn:
     ``<|vision_start|>[page]<|vision_end|>{text}``. The colorize LoRAs were trained
     on this encode (colour caption as ``text``; empty ``text`` is the page-only
-    mode). Use a plain text encode of "" as the negative."""
+    mode). Use a plain text encode of "" as the negative.
+
+    Only the colorize v2 LoRA trained on it; every current i2i LoRA takes a plain
+    text prompt (MOSS Caption Helper's conditioning). Hidden from the menu, kept so
+    v2 workflows load."""
+
+    DEPRECATED = True
 
     @classmethod
     def INPUT_TYPES(cls):

@@ -62,7 +62,7 @@ from anime_tools.captions.layout_json import (
 )
 from anime_tools.downloads import by_id
 
-from .nodes import RESOLUTION, target_size, to_pil
+from .nodes import STRIDE, to_pil
 from .token_split import has_hangul, split_clip
 
 logger = logging.getLogger(__name__)
@@ -436,7 +436,15 @@ class MOSSCaptionHelper:
                         ),
                     },
                 ),
-                "resolution": RESOLUTION,
+                "latent": (
+                    "LATENT",
+                    {
+                        "tooltip": (
+                            "MOSS i2i Reference's LATENT, also wired to the KSampler: "
+                            "the canvas the colorize boxes are placed on."
+                        )
+                    },
+                ),
             },
             "optional": {
                 "image": (
@@ -468,8 +476,8 @@ class MOSSCaptionHelper:
                             "(anima_lora prompt_tail = sure: the cache default, "
                             "sharper hands and backgrounds on Base). For a plain "
                             "CLIP Text Encode, and for a LoRA cached with "
-                            "prompt_tail sure; leave off for MOSS i2i Text "
-                            "Encode and LoRAs cached with prompt_tail off."
+                            "prompt_tail sure; leave off for LoRAs cached with "
+                            "prompt_tail off (the i2i ones)."
                         ),
                     },
                 ),
@@ -485,20 +493,29 @@ class MOSSCaptionHelper:
         "as written. layout: the layout "
         "JSON the anima_lora MOSS trainer encodes with caption_format=layout_json. colorize: the colorize LoRA's "
         "caption — that layout plus one text item per OCR-read line of the page, "
-        "boxed in abs_centralized yxyx on the canvas the i2i nodes generate at "
-        "(same resolution). Feed it to MOSS i2i Text Encode. colorize_v5: the v5 "
+        "boxed in abs_centralized yxyx on the latent's canvas (wire MOSS i2i "
+        "Reference's LATENT). colorize_v5: the v5 "
         "LoRA's caption, comic + box-only text items for a manga page, series + "
         "colour tags for an illustration. sanitize / decensor: "
         "that LoRA's fixed caption, verbatim, for a plain CLIP Text Encode. "
         "swap_text: the page's layout JSON with Korean split by syllable at "
-        "encode time; take the conditioning output. With clip connected, "
-        "conditioning is the prompt encoded."
+        "encode time. With clip connected, conditioning is the prompt encoded: "
+        "wire it to the KSampler's positive."
     )
 
-    def convert(
-        self, caption, task, resolution, image=None, put_endthink=False, clip=None
-    ):
-        text = self._prompt(caption, task, resolution, image)
+    def convert(self, caption, task, latent, image=None, put_endthink=False, clip=None):
+        if not isinstance(put_endthink, bool):
+            # A workflow saved with the old resolution widget hands its value to
+            # put_endthink (widgets load by position).
+            logger.warning(
+                "MOSS Caption Helper: put_endthink was %r (a workflow saved with the "
+                "resolution widget); running with it off",
+                put_endthink,
+            )
+            put_endthink = False
+        samples = latent["samples"]
+        size = (samples.shape[-1] * STRIDE, samples.shape[-2] * STRIDE)
+        text = self._prompt(caption, task, size, image)
         if put_endthink:
             if task == "swap_text":
                 logger.warning(
@@ -518,7 +535,8 @@ class MOSSCaptionHelper:
         encoder = split_clip(clip) if split else clip
         return (text, encoder.encode_from_tokens_scheduled(encoder.tokenize(text)))
 
-    def _prompt(self, caption, task, resolution, image):
+    def _prompt(self, caption, task, size, image):
+        """``size``: the canvas ``(W, H)`` the boxes are placed on."""
         if task == "default":
             return caption
         if task not in FIXED_CAPTIONS:
@@ -540,25 +558,19 @@ class MOSSCaptionHelper:
             boxes = []
             if image is not None:
                 page = to_pil(image)
-                w, h = target_size(page.width, page.height, resolution)
                 boxes = [
-                    _scaled(b, page.size, (w, h))
+                    _scaled(b, page.size, size)
                     for _, b in read_page(page, keep="keep_line")
                 ]
                 logger.info("MOSSCaptionHelper: %d text boxes", len(boxes))
-            else:
-                w = h = 0
-            text = _manga_v5_layout(caption, boxes, (w, h))
+            text = _manga_v5_layout(caption, boxes, size)
         else:
             if image is None:
                 raise ValueError("MOSS Caption Helper: colorize needs the page image")
             page = to_pil(image)
-            w, h = target_size(page.width, page.height, resolution)
-            lines = [
-                (t, _scaled(b, page.size, (w, h))) for t, b in dedupe(read_page(page))
-            ]
+            lines = [(t, _scaled(b, page.size, size)) for t, b in dedupe(read_page(page))]
             logger.info("MOSSCaptionHelper: %d OCR lines", len(lines))
-            text = _colorize_layout(caption, lines, (w, h))
+            text = _colorize_layout(caption, lines, size)
         return text
 
 

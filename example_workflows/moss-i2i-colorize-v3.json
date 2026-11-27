@@ -2,7 +2,7 @@
   "id": "df90aa0c-4cc4-4c1b-9ffd-097414fd63cb",
   "revision": 0,
   "last_node_id": 12,
-  "last_link_id": 18,
+  "last_link_id": 21,
   "nodes": [
     {
       "id": 1,
@@ -32,8 +32,8 @@
           "name": "CLIP",
           "type": "CLIP",
           "links": [
-            7,
-            9
+            9,
+            20
           ],
           "slot_index": 1
         },
@@ -142,7 +142,8 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            13
+            13,
+            19
           ],
           "slot_index": 1
         }
@@ -157,52 +158,6 @@
         1,
         "auto",
         "gpu"
-      ]
-    },
-    {
-      "id": 7,
-      "type": "CLIPTextEncode",
-      "pos": [
-        520,
-        60
-      ],
-      "size": [
-        420,
-        220
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 7
-        },
-        {
-          "name": "text",
-          "type": "STRING",
-          "widget": {
-            "name": "text"
-          },
-          "link": 17
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            11
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        ""
       ]
     },
     {
@@ -266,7 +221,7 @@
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 11
+          "link": 21
         },
         {
           "name": "negative",
@@ -393,19 +348,34 @@
       "mode": 0,
       "inputs": [
         {
+          "name": "latent",
+          "type": "LATENT",
+          "link": 19
+        },
+        {
           "name": "image",
           "type": "IMAGE",
           "link": 8
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 20
         }
       ],
       "outputs": [
         {
           "name": "prompt",
           "type": "STRING",
-          "links": [
-            17
-          ],
+          "links": [],
           "slot_index": 0
+        },
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "links": [
+            21
+          ]
         }
       ],
       "properties": {
@@ -414,7 +384,7 @@
       "widgets_values": [
         "touhou, purple eyes, purple hair, black hairband, blue shirt",
         "colorize",
-        1024
+        false
       ]
     }
   ],
@@ -444,19 +414,11 @@
       "IMAGE"
     ],
     [
-      7,
-      1,
-      1,
-      7,
-      0,
-      "CLIP"
-    ],
-    [
       8,
       2,
       0,
       12,
-      0,
+      1,
       "IMAGE"
     ],
     [
@@ -466,14 +428,6 @@
       8,
       0,
       "CLIP"
-    ],
-    [
-      11,
-      7,
-      0,
-      9,
-      1,
-      "CONDITIONING"
     ],
     [
       12,
@@ -516,20 +470,36 @@
       "IMAGE"
     ],
     [
-      17,
-      12,
-      0,
-      7,
-      1,
-      "STRING"
-    ],
-    [
       18,
       4,
       0,
       9,
       0,
       "MODEL"
+    ],
+    [
+      19,
+      4,
+      1,
+      12,
+      0,
+      "LATENT"
+    ],
+    [
+      20,
+      1,
+      1,
+      12,
+      2,
+      "CLIP"
+    ],
+    [
+      21,
+      12,
+      1,
+      9,
+      1,
+      "CONDITIONING"
     ]
   ],
   "groups": [],
