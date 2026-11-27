@@ -295,11 +295,13 @@ colour tags the LoRA trained on (copyright, `comic` for a manga page, hair / eye
 clothing colours). The OCR is anime-tools' AnimeText detector with the manga VL
 reader on every box; both load for the read (~6 GB VRAM freed first) and unload
 after it, and their weights download on first use. The helper needs
-`anime-tools` (0.9.4 or later for `colorize_v5` and `colorize`, which read its
-`anime_tools.ocr.floors`; 0.9.6 or later for line breaks in `layout`); without it the toolkit loads the i2i nodes only and logs a warning:
+`anime-tools` with its `ocr` extra (0.16.0 or later), which `requirements.txt` installs:
+ComfyUI Manager and the registry install it with the node. The extra keeps
+ComfyUI's torch as it is and adds transformers, peft and opencv-python. Without it the
+toolkit loads the other nodes only and logs a warning; install it by hand with
 
 ```
-pip install 'anime-tools @ git+https://github.com/sorryhyun/anime_tools'
+pip install -r ComfyUI/custom_nodes/comfyui-moss-toolkit/requirements.txt
 ```
 
 Write parentheses plain in the caption: `@channel (caststation)`, as the trainer's captions

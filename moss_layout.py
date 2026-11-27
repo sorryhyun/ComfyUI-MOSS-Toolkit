@@ -221,10 +221,10 @@ def _patcher(model, device):
 
 @lru_cache(maxsize=1)
 def _reader(device):
-    """``(patcher, SfxReader)``, loaded on the CPU once per process."""
-    from anime_tools.ocr.sfx import SfxReader
+    """``(patcher, OcrReader)``, loaded on the CPU once per process."""
+    from anime_tools.ocr.reader import OcrReader
 
-    reader = SfxReader.load(device="cpu")
+    reader = OcrReader.load(device="cpu")
     reader.device = str(device)
     return _patcher(reader.model, device), reader
 

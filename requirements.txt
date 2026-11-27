@@ -1,0 +1,3 @@
+# Caption Helper (layout / colorize / colorize_v5 / swap_text). The ocr extra leaves an
+# installed torch alone; ComfyUI Manager and the registry install this file.
+anime-tools[ocr] @ git+https://github.com/sorryhyun/anime_tools@v0.16.0

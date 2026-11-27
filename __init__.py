@@ -47,8 +47,9 @@ try:
     from . import moss_layout
 except ImportError as e:
     logging.getLogger(__name__).warning(
-        "MOSS Toolkit: layout node skipped (%s). Install it with "
-        "pip install 'anime-tools @ git+https://github.com/sorryhyun/anime_tools'",
+        "MOSS Toolkit: Caption Helper skipped (%s). Install it with "
+        "pip install -r requirements.txt in this node's folder, or "
+        "pip install 'anime-tools[ocr] @ git+https://github.com/sorryhyun/anime_tools@v0.16.0'",
         e,
     )
 else:
