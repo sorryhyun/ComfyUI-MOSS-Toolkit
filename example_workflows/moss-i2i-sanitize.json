@@ -62,7 +62,6 @@
         "moss_i2i_sanitize.safetensors",
         1,
         1024,
-        1,
         "auto",
         "gpu"
       ],
@@ -70,7 +69,6 @@
         "lora_name": "moss_i2i_sanitize.safetensors",
         "strength": 1,
         "resolution": 1024,
-        "ref_scale": 1,
         "task": "auto",
         "ref_cache": "gpu"
       }

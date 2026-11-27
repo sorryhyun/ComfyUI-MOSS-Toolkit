@@ -1,18 +1,14 @@
-"""MOSS i2i nodes: page-through-the-vision-tower text encode, and the VAE reference
-patch with its LoRA.
+"""MOSS i2i nodes: the page through the vision tower as a text encode, the VAE
+reference patch with its LoRA, and the MOSS LoRA loader.
 
-The Reference node sizes the ref from the recipe the LoRA was trained with
-(anima_lora ``project/moss_lora/plan.md``): an isolated ref (``ref_isolate`` in the
-metadata: colorize v3, sanitize, swap_text) is the full-size page with a text-only
-prompt (plain CLIP Text Encode); a joint ref (colorize v2) is the half-size page, with
-the page also through the vision tower (MOSS i2i Text Encode).
+The Reference sizes the ref from the LoRA's recipe: an isolated ref (``ref_isolate``)
+is the full-size page with a text-only prompt; a joint ref (colorize v2) is the
+half-size page, with the page also through the vision tower (MOSS i2i Text Encode).
 
-Preprocessing matches anima_lora's colorize cache (``project/moss_lora/src/
-colorize_cache.py`` on ``i2i_probe``): the page is fit (cover + centre crop,
-Lanczos) to the target size, which is ``library/moss/cache.py::target_size``; the
-vision tower sees it at that pixel count through Qwen2-VL's ``smart_resize``
-(factor 32, bicubic), and the ref is the fit page fit again to ``1/ref_scale`` per
-side, sides multiples of 16.
+Preprocessing mirrors anima_lora's i2i cache (``library/moss/cache.py::target_size``):
+the page is fit (cover + centre crop, Lanczos) to the target size, the vision tower
+sees it at that pixel count through Qwen2-VL's ``smart_resize`` (factor 32, bicubic),
+and the ref is the fit page fit again to ``1/ref_scale`` per side, sides multiples of 16.
 """
 
 import logging
@@ -42,8 +38,6 @@ WRAPPER_KEY = "moss_i2i_ref"
 # presets) unless this task says otherwise.
 AITK_JOINT = "ai-toolkit, kv_cache off"
 TASKS = ("auto", AITK_JOINT)
-# Saved before ``auto``: ``colorize`` runs as ``auto``, ``custom`` takes ``ref_scale``.
-LEGACY_TASKS = ("colorize", "custom")
 REF_CACHE = ("gpu", "cpu", "off")
 
 
@@ -137,9 +131,8 @@ class MOSSi2iTextEncode:
     on this encode (colour caption as ``text``; empty ``text`` is the page-only
     mode). Use a plain text encode of "" as the negative.
 
-    Only the colorize v2 LoRA trained on it; every current i2i LoRA takes a plain
-    text prompt (MOSS Caption Helper's conditioning). Hidden from the menu, kept so
-    v2 workflows load."""
+    Only the colorize v2 LoRA uses it; the other i2i LoRAs take a plain text prompt.
+    Hidden from the menu."""
 
     DEPRECATED = True
 
@@ -222,7 +215,7 @@ def load_lora(model, lora_name, strength, task="auto", bypass=False):
     return model, {
         "reference_latents": int(meta.get("reference_latents", 0) or 0),
         "ref_scale": meta.get("ref_scale"),
-        # Stamped by anima_lora since ref_timestep; negative or absent = shared.
+        # Negative or absent: the ref rows share the step's timestep.
         "ref_timestep": _ref_timestep(meta.get("ref_timestep")),
         # Stamped "1" by anima_lora when the ref queries saw only the ref keys.
         "ref_isolate": meta.get("ref_isolate") in ("1", "True"),
@@ -287,19 +280,6 @@ class MOSSi2iReference:
                     {"default": 1.0, "min": -4.0, "max": 4.0, "step": 0.05},
                 ),
                 "resolution": RESOLUTION,
-                "ref_scale": (
-                    "INT",
-                    {
-                        "default": 1,
-                        "min": 1,
-                        "max": 8,
-                        "tooltip": (
-                            "Read only by workflows saved with task = custom; auto "
-                            "takes the ref size from the LoRA (isolated ref: 1, full "
-                            "size; joint ref: 2, 1/4 area)."
-                        ),
-                    },
-                ),
                 "task": (
                     list(TASKS),
                     {
@@ -333,17 +313,10 @@ class MOSSi2iReference:
 
     RETURN_TYPES = ("MODEL", "LATENT")
     FUNCTION = "patch"
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, task):
-        # Naming ``task`` skips ComfyUI's combo check, so LEGACY_TASKS still load.
-        if task in TASKS or task in LEGACY_TASKS:
-            return True
-        return f"task {task!r} is not one of {TASKS}"
     CATEGORY = "MOSS-Image/i2i"
     DESCRIPTION = "Load a MOSS i2i LoRA and feed the page to MOSS-Image as a VAE reference latent (RoPE r = 1)."
 
-    def patch(self, model, vae, image, lora_name, strength, resolution, ref_scale, task="auto", ref_cache="gpu", bypass=False):
+    def patch(self, model, vae, image, lora_name, strength, resolution, task="auto", ref_cache="gpu", bypass=False):
         if not _is_moss(model):
             raise ValueError("MOSS i2i Reference needs a MOSS-Image MODEL.")
         dit = model.get_model_object("diffusion_model")
@@ -359,16 +332,8 @@ class MOSSi2iReference:
                     "MOSS i2i: %s was trained without references; the ref is off its distribution",
                     lora_name,
                 )
-        if task != "custom":
-            ref_scale, recipe = ref_recipe(meta)
-            logger.info("MOSS i2i: %s, ref_scale %d", recipe, ref_scale)
-        elif meta is not None and meta["ref_scale"] and int(meta["ref_scale"]) != ref_scale:
-            logger.warning(
-                "MOSS i2i: %s was trained at ref_scale %s, running %d",
-                lora_name,
-                meta["ref_scale"],
-                ref_scale,
-            )
+        ref_scale, recipe = ref_recipe(meta)
+        logger.info("MOSS i2i: %s, ref_scale %d", recipe, ref_scale)
         page = page_at_target(image, resolution)
         w, h = page.size
         rw = max(STRIDE, round(w / ref_scale / STRIDE) * STRIDE)

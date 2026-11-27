@@ -62,16 +62,14 @@
         "moss_colorize_v5.safetensors",
         1,
         1024,
-        1,
-        "colorize",
+        "auto",
         "gpu"
       ],
       "widgets_values_named": {
         "lora_name": "moss_colorize_3k_v4.safetensors",
         "strength": 1,
         "resolution": 1024,
-        "ref_scale": 1,
-        "task": "colorize",
+        "task": "auto",
         "ref_cache": "gpu"
       }
     },

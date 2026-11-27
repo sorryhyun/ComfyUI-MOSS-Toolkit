@@ -17,8 +17,7 @@ in the sequence, runs in fp32.
 
 The text embedder reads the prompt, the text rows of the RoPE table and the text mask,
 not the latent or the timestep, so ``TextCache`` runs it once per distinct prompt in a
-queued run instead of once per forward: in fp32 its two blocks are the larger part of
-the per-step cost outside the 42 blocks.
+queued run instead of once per forward.
 """
 
 import logging

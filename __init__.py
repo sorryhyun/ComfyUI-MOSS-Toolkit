@@ -1,32 +1,12 @@
-"""MOSS Toolkit ComfyUI custom nodes, on ComfyUI's own MOSS-Image support.
+"""MOSS Toolkit: ComfyUI nodes on ComfyUI's own MOSS-Image model.
 
-Loader (:mod:`.loader`):
-
-* ``MOSSImageLoader`` — DiT + Qwen3.5 TE (bf16 dir, INT8 or fp8 file) + VAE, each from its
-  own source -> MODEL, CLIP, VAE.
-
-Stream (:mod:`.stream`):
-
-* ``MOSSStreamFP32`` — MODEL -> MODEL, the fp32 residual stream on ComfyUI's own
-  ``MOSSImage`` (bf16 or INT8).
-
-i2i (:mod:`.nodes`, self-contained, pulls no anima_lora code):
-
-* ``MOSSi2iTextEncode`` — deprecated, hidden from the menu; CLIP + IMAGE + text ->
-  CONDITIONING, the page through Qwen3.5's vision tower (colorize v2 only), kept so
-  saved workflows load.
-* ``MOSSi2iReference`` — MODEL + VAE + IMAGE -> MODEL + LATENT, a MOSS i2i LoRA plus
-  the page as a clean VAE latent on RoPE's reserved ``r = 1`` axis.
-
-Text (:mod:`.moss_layout`, registered only when ``anime-tools`` is installed):
-
-* ``MOSSCaptionHelper`` — STRING + LATENT (+ IMAGE, CLIP) -> STRING, CONDITIONING, per task:
-  ``layout`` an Anima caption as MOSS's layout-JSON prompt,
-  ``colorize`` that layout plus the page's OCR lines, the colorize LoRA's caption,
-  ``sanitize`` / ``decensor`` that LoRA's fixed caption, ``swap_text`` the layout JSON
-  encoded with the Hangul syllable split (:mod:`.token_split`; ``conditioning`` only).
-* ``AnimaCaptionToMossLayout`` — deprecated, hidden from the menu; ``layout`` alone,
-  kept so saved workflows load.
+* :mod:`.loader` — ``MOSSImageLoader``: DiT + Qwen3.5 TE + VAE, each from its own source.
+* :mod:`.stream` — ``MOSSStreamFP32``: the fp32 residual stream as a MODEL patch.
+* :mod:`.nodes` — ``MOSSLoRA``, ``MOSSi2iReference`` (i2i LoRA + the page as a VAE
+  reference latent) and ``MOSSi2iTextEncode`` (vision-tower encode, colorize v2 only,
+  hidden from the menu).
+* :mod:`.moss_layout` — ``MOSSCaptionHelper``, registered only when ``anime-tools`` is
+  installed.
 """
 
 import logging

@@ -24,10 +24,10 @@ anima_lora's ``library/moss/model.py`` (``ref_span`` / ``ref_isolate`` /
 ``_ref_only``), which the colorize LoRAs were trained against.
 
 ComfyUI's own ``MOSSImage`` (``comfy.ldm.moss_image``, the Comfy-Org repack with fused
-q/k/v or the vendor shards) has the same reference mechanism built in, for ai-toolkit's
-edit LoRAs: ``[image | text | ref]``, the ref on ``r = 1`` at the image's ``f`` on its
-own centred grid, at t = 0, isolated (keys / values computed once, ``ref_kv``) or joint.
-On that model the wrapper passes the ref to it (``native_ref_conds``) instead. The two
+q/k/v or the vendor shards) has a reference mechanism built in: ``[image | text | ref]``,
+the ref on ``r = 1`` at the image's ``f`` on its own centred grid, at t = 0, isolated
+(keys / values computed once, ``ref_kv``) or joint. On that model the wrapper passes the
+ref to it (``native_ref_conds``) instead. The two
 agree for a full-size ref at ``ref_timestep`` 0 or shared; a smaller ref (colorize v1 /
 v2) needs the stretched grid, so the ``moss-image`` node's own loader.
 
@@ -230,8 +230,8 @@ _compiled = {}
 def _on(fn, layer, *args):
     """``fn(block, ops, *args)`` on ``layer``. A compiled block (an
     ``OptimizedModule``, e.g. the Spectrum KSampler's compile) runs ``fn`` compiled
-    too: one inductor graph with dynamic shapes, shared by all 42 blocks, since
-    their parameters are graph inputs rather than guards."""
+    too, one dynamic-shape inductor graph shared by every block (their parameters
+    are graph inputs, not guards)."""
     base = getattr(layer, "_orig_mod", layer)
     ops = sys.modules[type(base).__module__]
     if base is not layer:
@@ -515,9 +515,8 @@ def core_ref_kv(dit, refs, transformer_options, bank):
     (every bypass adapter off, ``shared_block_modulation``'s too) and each block's keys
     (normed, rotated) and values with ``bank``'s deltas on ``proj.k`` / ``proj.v``. The
     block runs after its keys and values are taken: its residuals update ``x`` in place.
-    Outside ComfyUI's malloc graph (dynamic VRAM): recorded, the build's extra
-    allocations broke the graph in every block, 44 breaks and 588 rogues a prompt, and
-    sampling ran 1.4 → 2.1 s/it over successive prompts."""
+    Runs outside ComfyUI's malloc graph (dynamic VRAM): recorded, the build's extra
+    allocations break the graph in every block."""
     from comfy.ldm.moss_image.model import modulate, rope_split_half, timestep_embedding
     import comfy.model_prefetch
     import comfy.utils
@@ -608,11 +607,10 @@ def make_apply_model_wrapper(ref, ref_timestep=None, ref_isolate=False, ref_cach
     ``diffusion_model`` runs ``forward_with_ref``. Spectrum's cached steps never
     reach ``apply_model``, so they cost no ref rows. ``ref_cache`` (``gpu`` / ``cpu``
     / ``off``): where an isolated ref's ``RefKV`` lives. It is rebuilt once per
-    prompt (the key carries the executing prompt id): a K/V kept from the previous
-    prompt broke ComfyUI's dynamic-VRAM allocation graph in every block on a reseed
-    (44 graph breaks, 588 rogues, sampling 17 → 25 s), and the rebuild costs ~1 s.
+    prompt (the key carries the executing prompt id): a K/V kept across prompts
+    breaks ComfyUI's dynamic-VRAM allocation graph in every block.
 
-    The wrapper holds the ref tensor and its cache only (no patcher, no module), and
+    The wrapper holds the ref tensor and its cache only (no patcher, no module) and
     resolves the module from ``executor.class_obj`` each call, so a reloaded model
     is followed; the cache is keyed on the model's weight patches."""
     cache = {}

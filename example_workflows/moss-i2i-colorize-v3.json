@@ -155,7 +155,6 @@
         "moss_colorize_ref_v3.safetensors",
         1.0,
         1024,
-        1,
         "auto",
         "gpu"
       ]

@@ -1,43 +1,16 @@
-"""Anima caption → MOSS-Image layout-JSON prompt, and the caption helper.
+"""MOSS Caption Helper: an Anima caption as the prompt a MOSS LoRA trained on, per
+task (``docs/caption-helper.md``).
 
-A MOSS LoRA trained by the anima_lora trainer with ``caption_format=layout_json``
-saw every caption through :func:`anime_tools.captions.layout_json.layout_json`;
-this node runs the same function so a prompt typed in Anima format reaches the
-text encoder as the identical string. The output goes into any STRING input
-(``CLIPTextEncode`` with MOSS-Image's text encoder).
+Mirrors of anima_lora, change both together: ``layout`` is
+``anime_tools.captions.layout_json`` as the trainer's ``caption_format=layout_json``;
+``colorize`` (``dedupe`` / ``_colorize_layout``) is ``library/moss/colorize.py``
+``captions = "ocr"``; ``colorize_v5`` is its ``captions = "control"``; ``FIXED_CAPTIONS``
+are the i2i ``cache.toml`` ``fixed_caption`` rows; ``swap_text``'s split is
+:mod:`.token_split`; ``put_endthink`` is ``prompt_tail = sure``.
 
-``MOSSCaptionHelper`` adds a task switch: ``default`` returns the caption as written,
-``layout`` is the conversion above,
-``colorize`` the colorize v4 LoRA's training caption — the caption through
-``caption_to_layout``, then one text item per line the OCR reads off the B&W page
-(anima_lora ``library/moss/colorize.py`` ``captions = "ocr"``; ``dedupe`` /
-``_colorize_layout`` mirror it). ``colorize_v5`` is the v5 caption (``captions =
-"control"``), no OCR text: a caption with a comic tag is a manga page, ``comic`` (then
-a plain caption's other tags) plus the ``character`` items of a layout-JSON caption plus a box-only text item per line
-``anime_tools.ocr.floors.keep_line`` keeps (the page connected); any other caption is
-an illustration, its series (the tag KB's copyright tags) and colour tags as layout
-JSON (``anime_tools.captions.color_tags``). The OCR models load once, each in a ComfyUI-managed
-patcher that stays until something else needs the card, and the VL reader only for a
-page the detector boxed. ``sanitize`` and
-``decensor`` are those LoRAs' one fixed caption each, plain text; the caption input
-is ignored. ``swap_text`` is the caption as written (the page's layout JSON) and
-encodes Hangul with the syllable split the swap_text LoRA trained on
-(:mod:`.token_split`); the split is in the tokenizer, so only the ``conditioning``
-output (with ``clip`` connected) carries it.
-
-With ``clip`` connected, the ``conditioning`` output is the prompt encoded as a plain
-CLIP Text Encode would, so the helper can feed the sampler directly.
-
-``put_endthink`` returns the whole chat turn with the ``sure`` assistant tail
-(``<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n`` +
-``\n</think>\n\nSure,``), as anima_lora's ``prompt_tail = sure`` encodes it. ComfyUI's
-MOSS tokenizer skips its own template for text starting with ``<|im_start|>``, so the
-tail lands after the generation prompt, not inside the user turn.
-
-Torch-free but for the colorize OCR. Needs ``anime-tools``; ``__init__`` skips this node when it is not
-installed. The danbooru tag KB (``danbooru_tags_classified.csv``) decides which
-tags are characters / series / meta; it is looked up under ``HOME/models`` and
-fetched there on first use when absent.
+Torch-free but for the OCR. ``__init__`` skips this node when ``anime-tools`` is not
+installed. The danbooru tag KB is looked up under ``HOME/models`` and fetched there
+on first use.
 """
 
 from __future__ import annotations
@@ -133,60 +106,10 @@ def warn_escaped_parens(caption: str, node: str) -> None:
         )
 
 
-class AnimaCaptionToMossLayout:
-    """Map an Anima-format caption onto MOSS-Image's layout-JSON prompt.
-
-    Deprecated: ``MOSSCaptionHelper`` ``task = layout`` is the same conversion.
-    Kept registered (hidden from the node menu) so saved workflows still load."""
-
-    DEPRECATED = True
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "caption": (
-                    "STRING",
-                    {
-                        "multiline": True,
-                        "default": "",
-                        "tooltip": (
-                            "Anima-format caption: tag bag, then optional "
-                            "'On the left, …' position clauses and a "
-                            "'Japanese text reads as \"…\"' clause."
-                        ),
-                    },
-                ),
-            },
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("prompt",)
-    FUNCTION = "convert"
-    CATEGORY = "MOSS-Image/text"
-    DESCRIPTION = (
-        "Deprecated: use MOSS Caption Helper, task layout. "
-        "Anima caption -> MOSS-Image layout JSON, byte-identical to what the "
-        "anima_lora MOSS trainer encodes with caption_format=layout_json. "
-        "Rating / meta, characters, series and @artists get their own summary "
-        "keys, the remaining tags become summary.caption, each position clause "
-        "a character item, each quoted text line a text item. Use it in front of "
-        "the text encoder for a LoRA trained on layout-JSON captions."
-    )
-
-    def convert(self, caption: str):
-        warn_escaped_parens(caption, "Anima Caption -> MOSS Layout")
-        text = to_layout_json(caption.strip())
-        logger.info("AnimaCaptionToMossLayout: %s", text)
-        return (text,)
-
-
 # The OCR floors are anime_tools.ocr.floors (readable, keep_line), the ones the
 # colorize and swap_text LoRAs trained on.
 OCR_VRAM_GB = 6
-# Per task, the anima_lora cache.toml ``fixed_caption`` its LoRA trained on
-# (caption_format fixed: every pair encoded this string verbatim) — change both
-# together.
+# Each i2i task's cache.toml ``fixed_caption``.
 FIXED_CAPTIONS = {
     "sanitize": "no sfx, no dialogue, no watermark",
     "decensor": "no bar censor, no mosaic censor, uncensored",
@@ -504,15 +427,6 @@ class MOSSCaptionHelper:
     )
 
     def convert(self, caption, task, latent, image=None, put_endthink=False, clip=None):
-        if not isinstance(put_endthink, bool):
-            # A workflow saved with the old resolution widget hands its value to
-            # put_endthink (widgets load by position).
-            logger.warning(
-                "MOSS Caption Helper: put_endthink was %r (a workflow saved with the "
-                "resolution widget); running with it off",
-                put_endthink,
-            )
-            put_endthink = False
         samples = latent["samples"]
         size = (samples.shape[-1] * STRIDE, samples.shape[-2] * STRIDE)
         text = self._prompt(caption, task, size, image)
@@ -574,11 +488,5 @@ class MOSSCaptionHelper:
         return text
 
 
-NODE_CLASS_MAPPINGS = {
-    "AnimaCaptionToMossLayout": AnimaCaptionToMossLayout,
-    "MOSSCaptionHelper": MOSSCaptionHelper,
-}
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "AnimaCaptionToMossLayout": "Anima Caption → MOSS Layout JSON",
-    "MOSSCaptionHelper": "MOSS Caption Helper",
-}
+NODE_CLASS_MAPPINGS = {"MOSSCaptionHelper": MOSSCaptionHelper}
+NODE_DISPLAY_NAME_MAPPINGS = {"MOSSCaptionHelper": "MOSS Caption Helper"}

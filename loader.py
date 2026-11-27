@@ -3,11 +3,11 @@
 Each part is picked on its own, so SFT's DiT (shipped alone) pairs with Base's TE and
 VAE, and the TE can be a quantized single file instead of the bf16 shards (ComfyUI's
 mixed-precision format): INT8 (``sorryhyun/MOSS-Image-Qwen3.5-9B-int8``, the default when
-present) or fp8 (``sorryhyun/MOSS-Image-Qwen3.5-9B-fp8``). Everything loads through
-ComfyUI's own ``MOSSImage`` model and MOSS-Image text encoder: vendor shards (separate
-q / k / v) and Comfy-Org's fused or INT8 files alike, the model ``Load Diffusion Model``
-gives. It samples with ``ModelSamplingAuraFlow`` (timestep σ); ``ModelSamplingSD3``
-(1000·σ) renders noise on it.
+present) or fp8 (``sorryhyun/MOSS-Image-Qwen3.5-9B-fp8``). Every DiT (vendor shards with
+separate q / k / v, Comfy-Org's fused or INT8 files) loads as ComfyUI's own ``MOSSImage``,
+the model ``Load Diffusion Model`` gives, and the TE as ComfyUI's MOSS-Image text encoder.
+It samples with ``ModelSamplingAuraFlow`` (timestep σ); ``ModelSamplingSD3`` (1000·σ)
+renders noise on it.
 
 Options:
 
@@ -286,9 +286,7 @@ class MOSSImageLoader:
                     "default": "bf16",
                     "advanced": True,
                     "tooltip": "DiT residual stream precision. fp32: the stream, modulation, "
-                    "norms, embedders and head run in fp32 around the block GEMMs "
-                    "(+1.5% time, +0.6 GB). Renders move a few /255 in detail; neither is "
-                    "consistently better.",
+                    "norms, embedders and head run in fp32 around the block GEMMs.",
                 }),
             },
         }

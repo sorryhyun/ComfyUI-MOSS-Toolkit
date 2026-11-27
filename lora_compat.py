@@ -4,8 +4,8 @@ Two DiT layouts are in use: the vendor's separate ``layers.N.proj.{q,k,v}`` (the
 ``moss-image`` node, and ComfyUI's ``MOSSImage`` on the vendor shards) and the
 Comfy-Org repack's fused ``layers.N.proj.qkv`` (ComfyUI's ``MOSSImage``, ai-toolkit).
 ComfyUI maps a split LoRA onto a fused model by row slices, but not the reverse, so a
-fused LoRA (ai-toolkit's LoKr, ai-toolkit saves before 2026-10-17, any LoRA trained on
-the repack) patches nothing on a split model. ``to_model_layout`` splits those groups
+fused LoRA (ai-toolkit's LoKr, any LoRA trained on the repack) patches nothing on a
+split model. ``to_model_layout`` splits those groups
 by rows: exact for LoRA / LoHa (the down side is shared), and for LoKr when ``w1``'s
 rows divide by 3 (else the group becomes three full ``diff`` patches).
 
@@ -15,10 +15,10 @@ models' key maps carry; the ``moss-image`` model's map has no bare paths.
 ``load(..., bypass=True)`` adds the adapters' output in the forward and leaves the base
 weights alone. A weight patch on an INT8 DiT requantizes each patched linear (fresh row
 scales, stochastic rounding), which loses a GPTQ file's weights; bypass keeps them.
-ComfyUI's own ``load_bypass_lora_for_models`` drops adapters on row slices of a fused
-``proj.qkv``, binds its hooks to the modules of the patcher it was given (a non-dynamic
-clone for compile rebuilds the DiT) and, chained, overwrites the previous LoRA's
-injection; ``Deltas`` and ``BypassInjection`` do neither.
+``Deltas`` and ``BypassInjection`` replace ComfyUI's ``load_bypass_lora_for_models``,
+which drops adapters on row slices of a fused ``proj.qkv``, binds its hooks to the
+patcher it was given (a non-dynamic clone for compile rebuilds the DiT) and, chained,
+overwrites the previous LoRA's injection.
 
 On a ConvRot INT8 linear, ``DownRows`` runs the ``down`` matrices as one small INT8 GEMM
 in the weight's layout and only ``up`` in float. ``BypassForwardHook`` would set
